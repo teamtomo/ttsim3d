@@ -1,0 +1,8 @@
+[files]
+extend-exclude = ["src/ttsim3d/elastic_scattering_factors.json"]
+
+[default.dictionary]
+terms = [
+    "BA",
+    "ND",
+]

@@ -1,4 +1,4 @@
-"""Simulate a 3D electrostatic potential map from a PDB in pyTorch"""
+"""Simulate a 3D electrostatic potential map from a PDB in pyTorch."""
 
 from importlib.metadata import PackageNotFoundError, version
 
