@@ -109,3 +109,6 @@ ENV/
 # IDE settings
 .vscode/
 .idea/
+
+# test stuff
+src/ttsim3d/test_code.txt

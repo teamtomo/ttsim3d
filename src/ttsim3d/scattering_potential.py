@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 
+import einops
 import torch
 from scipy import constants as C
 
@@ -62,6 +63,31 @@ def get_scattering_parameters() -> tuple[dict, dict]:
     return scattering_params_a, scattering_params_b
 
 
+def get_a_param(
+    scattering_params_a: dict,
+    atoms_id_filtered: list[str],
+) -> torch.Tensor:
+    """
+    Get the 'a' scattering parameters.
+
+    Args:
+        scattering_params_a: dict
+            Scattering parameters for atom type A.
+        atoms_id_filtered: list[str]
+            Atom IDs.
+
+    Returns
+    -------
+        params_tensor: torch.Tensor
+            Scattering parameters for each atom in the neighborhood
+    """
+    # Iterate over each atom_id in atoms_id_filtered
+    params_list = [scattering_params_a[atom_id] for atom_id in atoms_id_filtered]
+    # Convert the list to a PyTorch tensor with the desired shape
+    params_tensor = torch.tensor(params_list)
+    return params_tensor
+
+
 def get_total_b_param(
     scattering_params_b: dict,
     atoms_id_filtered: list[str],
@@ -97,10 +123,9 @@ def get_total_b_param(
 def get_scattering_potential_of_voxel(
     zyx_coords1: torch.Tensor,  # Shape: (N, 3)
     zyx_coords2: torch.Tensor,  # Shape: (N, 3)
-    bPlusB: torch.Tensor,
-    atom_id: str,
+    bPlusB: torch.Tensor,  # Shape: (5)
     lead_term: float,
-    scattering_params_a: dict,  # Add parameter dictionary
+    scattering_params_a: torch.Tensor,  # Shape: (5)
     device: torch.device = None,
 ) -> torch.Tensor:
     """
@@ -117,7 +142,7 @@ def get_scattering_potential_of_voxel(
             Atom ID.
         lead_term: float
             Lead term for the scattering potential.
-        scattering_params_a: dict
+        scattering_params_a: torch.Tensor
             Scattering parameters for atom type A.
         device: torch.device
             Device to run the computation on.
@@ -131,50 +156,84 @@ def get_scattering_potential_of_voxel(
     if device is None:
         device = zyx_coords1.device
 
-    # Get scattering parameters for this atom type and move to correct device
-    # Convert parameters to tensor and move to device
-    if isinstance(scattering_params_a[atom_id], torch.Tensor):
-        a_params = scattering_params_a[atom_id].clone().detach().to(device)
-    else:
-        a_params = torch.as_tensor(scattering_params_a[atom_id], device=device)
-
     # Compare signs element-wise for batched coordinates
-    t1 = (zyx_coords1[:, 2] * zyx_coords2[:, 2]) >= 0  # Shape: (N,)
-    t2 = (zyx_coords1[:, 1] * zyx_coords2[:, 1]) >= 0  # Shape: (N,)
-    t3 = (zyx_coords1[:, 0] * zyx_coords2[:, 0]) >= 0  # Shape: (N,)
-
+    t_all = (zyx_coords1 * zyx_coords2) >= 0  # Shape: (N, 3)
     temp_potential = torch.zeros(len(zyx_coords1), device=device)
 
-    for i, bb in enumerate(bPlusB):
-        a = a_params[i]
-        # Handle x dimension
-        x_term = torch.where(
-            t1,
-            torch.special.erf(bb * zyx_coords2[:, 2])
-            - torch.special.erf(bb * zyx_coords1[:, 2]),
-            torch.abs(torch.special.erf(bb * zyx_coords2[:, 2]))
-            + torch.abs(torch.special.erf(bb * zyx_coords1[:, 2])),
-        )
+    # rearrange for broadcasting
+    zyx_coords1 = einops.rearrange(zyx_coords1, "n d -> n d 1")
+    zyx_coords2 = einops.rearrange(zyx_coords2, "n d -> n d 1")
+    t_all = einops.rearrange(t_all, "n d -> n d 1")
+    bPlusB = einops.rearrange(bPlusB, "i -> 1 1 i")
 
-        # Handle y dimension
-        y_term = torch.where(
-            t2,
-            torch.special.erf(bb * zyx_coords2[:, 1])
-            - torch.special.erf(bb * zyx_coords1[:, 1]),
-            torch.abs(torch.special.erf(bb * zyx_coords2[:, 1]))
-            + torch.abs(torch.special.erf(bb * zyx_coords1[:, 1])),
-        )
-
-        # Handle z dimension
-        z_term = torch.where(
-            t3,
-            torch.special.erf(bb * zyx_coords2[:, 0])
-            - torch.special.erf(bb * zyx_coords1[:, 0]),
-            torch.abs(torch.special.erf(bb * zyx_coords2[:, 0]))
-            + torch.abs(torch.special.erf(bb * zyx_coords1[:, 0])),
-        )
-
-        t0 = z_term * y_term * x_term
-        temp_potential += a * torch.abs(t0)
-
+    all_terms = torch.where(
+        t_all,
+        torch.special.erf(bPlusB * zyx_coords2)
+        - torch.special.erf(bPlusB * zyx_coords1),
+        torch.abs(torch.special.erf(bPlusB * zyx_coords2))
+        + torch.abs(torch.special.erf(bPlusB * zyx_coords1)),
+    )
+    t0 = einops.reduce(all_terms, "n d i-> n i", "prod")
+    a_mult = torch.abs(t0) * scattering_params_a
+    temp_potential = einops.reduce(a_mult, "n i -> n", "sum")
     return lead_term * temp_potential
+
+
+def get_scattering_potential_of_voxel_batch(
+    zyx_coords1: torch.Tensor,  # Shape: (atomN, voxelN, 3)
+    zyx_coords2: torch.Tensor,  # Shape: (atomN, voxelN, 3)
+    bPlusB: torch.Tensor,  # Shape: (atomN, 5)
+    lead_term: float,
+    scattering_params_a: torch.Tensor,  # Shape: (atomN, 5)
+    device: torch.device = None,
+) -> torch.Tensor:
+    """
+    Calculate scattering potential for all voxels in the neighborhood of of the atom.
+
+    Args:
+        zyx_coords1: torch.Tensor
+            Coordinates of the first voxel in the neighborhood.
+        zyx_coords2: torch.Tensor
+            Coordinates of the second voxel in the neighborhood.
+        bPlusB: torch.Tensor
+            Total B parameter for each atom in the neighborhood.
+        atom_id: str
+            Atom ID.
+        lead_term: float
+            Lead term for the scattering potential.
+        scattering_params_a: torch.Tensor
+            Scattering parameters for atom type A.
+        device: torch.device
+            Device to run the computation on.
+
+    Returns
+    -------
+        potential: torch.Tensor
+            Scattering potential for all voxels in the neighborhood.
+    """
+    # If device not specified, use the device of input tensors
+    if device is None:
+        device = zyx_coords1.device
+
+    # Compare signs element-wise for batched coordinates
+    t_all = (zyx_coords1 * zyx_coords2) >= 0  # Shape: (atomN, voxelN, 3)
+    temp_potential = torch.zeros(len(zyx_coords1), device=device)
+
+    # rearrange for broadcasting
+    zyx_coords1 = einops.rearrange(zyx_coords1, "a n d -> a n d 1")
+    zyx_coords2 = einops.rearrange(zyx_coords2, "a n d -> a n d 1")
+    t_all = einops.rearrange(t_all, "a n d -> a n d 1")
+    bPlusB = einops.rearrange(bPlusB, "a i -> a 1 1 i")
+
+    all_terms = torch.where(
+        t_all,
+        torch.special.erf(bPlusB * zyx_coords2)
+        - torch.special.erf(bPlusB * zyx_coords1),
+        torch.abs(torch.special.erf(bPlusB * zyx_coords2))
+        + torch.abs(torch.special.erf(bPlusB * zyx_coords1)),
+    )
+    t0 = einops.reduce(all_terms, "a n d i -> a n i", "prod")
+    scattering_params_a = einops.rearrange(scattering_params_a, "a i -> a 1 i")
+    a_mult = torch.abs(t0) * scattering_params_a
+    temp_potential = einops.reduce(a_mult, "a n i -> a n", "sum")
+    return (lead_term * temp_potential).float()

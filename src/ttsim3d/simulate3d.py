@@ -1,9 +1,9 @@
 """The main simulation function."""
 
-import multiprocessing as mp
 import time
 from typing import Optional
 
+import einops
 import mrcfile
 import numpy as np
 import torch
@@ -15,8 +15,9 @@ from ttsim3d.grid_coords import get_size_neighborhood_cistem, get_upsampling
 from ttsim3d.pdb_handler import load_model, remove_hydrogens
 from ttsim3d.scattering_potential import (
     calculate_relativistic_electron_wavelength,
+    get_a_param,
     get_scattering_parameters,
-    get_scattering_potential_of_voxel,
+    get_scattering_potential_of_voxel_batch,
     get_total_b_param,
 )
 
@@ -103,225 +104,67 @@ def fourier_rescale_3d_force_size(
     return cropped_fft_shifted_back
 
 
-def process_atom_batch(
-    batch_args: tuple,
-) -> torch.Tensor:
-    """
-    Process a batch of atoms to calculate the scattering potential in parallel.
-
-    Args:
-        batch_args: Tuple containing the arguments for the batch.
-
-    Returns
-    -------
-        torch.Tensor: The local volume grid for the batch.
-    """
-    try:
-        # Unpack the tuple correctly
-        (
-            atom_indices_batch,
-            atom_dds_batch,
-            bPlusB_batch,
-            atoms_id_filtered_batch,
-            voxel_offsets_flat,
-            upsampled_shape,
-            upsampled_pixel_size,
-            lead_term,
-            scattering_params_a,
-        ) = batch_args
-
-        # Move tensors to CPU and ensure they're contiguous
-        atom_indices_batch = atom_indices_batch.cpu().contiguous()
-        atom_dds_batch = atom_dds_batch.cpu().contiguous()
-        voxel_offsets_flat = voxel_offsets_flat.cpu().contiguous()
-
-        # Initialize local volume grid for this batch
-        local_volume = torch.zeros(upsampled_shape, device="cpu")
-
-        # Add debug print to verify data
-        print(f"Processing batch of size {len(atom_indices_batch)}")
-
-        # offset_test = upsampled_pixel_size/2
-        # Process each atom in the batch
-        for i in range(len(atom_indices_batch)):
-            atom_pos = atom_indices_batch[i]
-            atom_dds = atom_dds_batch[i]
-            atom_id = atoms_id_filtered_batch[i]
-
-            # Calculate voxel positions relative to atom center
-            voxel_positions = (
-                atom_pos.view(1, 3) + voxel_offsets_flat
-            )  # indX/Y/Z equivalent
-
-            # print(voxel_positions.shape)
-            # Check bounds for each dimension separately
-            valid_z = (voxel_positions[:, 0] >= 0) & (
-                voxel_positions[:, 0] < upsampled_shape[0]
-            )
-            valid_y = (voxel_positions[:, 1] >= 0) & (
-                voxel_positions[:, 1] < upsampled_shape[1]
-            )
-            valid_x = (voxel_positions[:, 2] >= 0) & (
-                voxel_positions[:, 2] < upsampled_shape[2]
-            )
-            valid_mask = valid_z & valid_y & valid_x
-
-            if valid_mask.any():
-                # Calculate coordinates relative to atom center
-                relative_coords = (
-                    voxel_positions[valid_mask] - atom_pos - atom_dds - PIXEL_OFFSET
-                ) * upsampled_pixel_size
-                coords1 = relative_coords
-                coords2 = relative_coords + upsampled_pixel_size
-
-                # Calculate potentials for valid positions
-                potentials = get_scattering_potential_of_voxel(
-                    zyx_coords1=coords1,
-                    zyx_coords2=coords2,
-                    bPlusB=bPlusB_batch[i],
-                    atom_id=atom_id,
-                    lead_term=lead_term,
-                    scattering_params_a=scattering_params_a,  # Pass the parameters
-                )
-
-                # Get valid voxel positions
-                valid_positions = voxel_positions[valid_mask].long()
-
-                # Update local volume
-                local_volume[
-                    valid_positions[:, 0], valid_positions[:, 1], valid_positions[:, 2]
-                ] += potentials
-    except Exception as e:
-        print(f"Error in process_atom_batch: {e!s}")
-        raise e
-
-    return local_volume
-
-
-def process_atoms_parallel(
+def process_atoms_single_thread(
     atom_indices: torch.Tensor,
     atom_dds: torch.Tensor,
     bPlusB: torch.Tensor,
-    scattering_params_a: dict,
-    atoms_id_filtered: list[str],
+    scattering_params_a: torch.Tensor,
     voxel_offsets_flat: torch.Tensor,
     upsampled_shape: tuple[int, int, int],
     upsampled_pixel_size: float,
     lead_term: float,
     n_cores: int = 1,
+    device: torch.device = None,
 ) -> torch.Tensor:
     """
-    Scattering potential of atoms in parallel using cpu multiprocessing.
+    Process atoms in a single thread.
 
     Args:
         atom_indices: The indices of the atoms.
-        atom_dds: The offset from the edge of the voxel.
-        bPlusB: The sum of the B factors from scattering and pdb file.
-        scattering_params_a: The 'a' scattering parameters.
-        atoms_id_filtered: The list of atom IDs (no H).
-        voxel_offsets_flat: The flattened voxel offsets for the neighborhood.
-        upsampled_shape: The shape of the upsampled volume.
-        upsampled_pixel_size: The pixel size of the upsampled volume.
-        lead_term: The lead term for the calculation.
-        n_cores: The number of CPU cores to use.
+        atom_dds: The dds of the atoms.
+        bPlusB: The B factor.
+        scattering_params_a: The scattering parameters.
+        voxel_offsets_flat: The flat voxel offsets.
+        upsampled_shape: The upsampled shape.
+        upsampled_pixel_size: The upsampled pixel size.
+        lead_term: The lead term.
+        n_cores: The number of cores.
+        device: The device.
 
     Returns
     -------
-        torch.Tensor: The final volume grid.
+        torch.Tensor: The final volume.
     """
-    # Ensure all inputs are on CPU and contiguous
-    atom_indices = atom_indices.cpu().contiguous()
-    atom_dds = atom_dds.cpu().contiguous()
-    voxel_offsets_flat = voxel_offsets_flat.cpu().contiguous()
+    # Calculate voxel positions relative to atom center
+    atom_pos = einops.rearrange(atom_indices, "a d -> a 1 d")
+    voxel_offsets_flat = einops.rearrange(voxel_offsets_flat, "v d -> 1 v d")
+    voxel_positions = atom_pos + voxel_offsets_flat  # (n_atoms, n^3, 3)
 
-    # Convert pandas Series to list if necessary
-    if hasattr(atoms_id_filtered, "tolist"):
-        atoms_id_filtered = atoms_id_filtered.tolist()
+    # get relative coords
+    atom_dds = einops.rearrange(atom_dds, "a d -> a 1 d")
+    relative_coords = (
+        voxel_positions - atom_pos - atom_dds - PIXEL_OFFSET
+    ) * upsampled_pixel_size
+    coords1 = relative_coords
+    coords2 = relative_coords + upsampled_pixel_size
 
-    num_atoms = len(atom_indices)
-    batch_size = max(1, num_atoms // (n_cores))  # Divide work into smaller batches
+    potentials = get_scattering_potential_of_voxel_batch(
+        zyx_coords1=coords1,
+        zyx_coords2=coords2,
+        bPlusB=bPlusB,
+        lead_term=lead_term,
+        scattering_params_a=scattering_params_a,  # Pass the parameters
+    )  # shape(a, v)
 
-    print(f"Processing {num_atoms} atoms in batches of {batch_size}")
-
-    # Prepare batches
-    batches = []
-    for start_idx in range(0, num_atoms, batch_size):
-        end_idx = min(start_idx + batch_size, num_atoms)
-        batch_args = (
-            atom_indices[start_idx:end_idx],
-            atom_dds[start_idx:end_idx],
-            bPlusB[start_idx:end_idx],
-            atoms_id_filtered[start_idx:end_idx],
-            voxel_offsets_flat,
-            upsampled_shape,
-            upsampled_pixel_size,
-            lead_term,
-            scattering_params_a,
-        )
-        batches.append(batch_args)
-
-    # Process batches in parallel
-    with mp.Pool(n_cores) as pool:
-        results = []
-        for i, result in enumerate(pool.imap_unordered(process_atom_batch, batches)):
-            results.append(result)
-            if (i + 1) % 10 == 0:
-                print(f"Processed {(i + 1) * batch_size} atoms of {num_atoms}")
-
-    # Combine results
-    final_volume = torch.zeros(upsampled_shape, device="cpu")
-    for result in results:
-        final_volume += result
-
+    # add to volume
+    index_positions = voxel_positions.long()
+    final_volume = torch.zeros(upsampled_shape, device=device)
+    final_volume.index_put_(
+        (index_positions[:, :, 0], index_positions[:, :, 1], index_positions[:, :, 2]),
+        potentials,
+        accumulate=True,
+    )
     return final_volume
-
-
-def process_device_atoms(
-    args: tuple,
-) -> torch.Tensor:
-    """
-    Process atoms for a single device (gpu or cpu) in parallel.
-
-    Args:
-        args: Tuple containing the arguments for the device.
-
-    Returns
-    -------
-        torch.Tensor: The final volume grid for the device.
-    """
-    (
-        device_atom_indices,
-        device_atom_dds,
-        device_bPlusB,
-        device_atoms_id,
-        scattering_params_a,
-        voxel_offsets_flat,
-        upsampled_shape,
-        upsampled_pixel_size,
-        lead_term,
-        device,
-        n_cpu_cores,
-    ) = args
-
-    print(f"\nProcessing atoms on {device}")
-
-    if device.type == "cuda":
-        print("Not done this yet!")
-    else:
-        volume_grid = process_atoms_parallel(
-            atom_indices=device_atom_indices,
-            atom_dds=device_atom_dds,
-            bPlusB=device_bPlusB,
-            scattering_params_a=scattering_params_a,
-            atoms_id_filtered=device_atoms_id,
-            voxel_offsets_flat=voxel_offsets_flat,
-            upsampled_shape=upsampled_shape,
-            upsampled_pixel_size=upsampled_pixel_size,
-            lead_term=lead_term,
-            n_cores=n_cpu_cores,
-        )
-
-    return volume_grid
 
 
 def simulate3d(
@@ -382,8 +225,6 @@ def simulate3d(
     # get the scattering parameters
     scattering_params_a, scattering_params_b = get_scattering_parameters()
 
-    # It is called by ttsim3d.py with all the inputs
-
     # Select devices
     if gpu_ids == [-999]:  # Special case for CPU-only
         devices = [torch.device("cpu")]
@@ -408,6 +249,8 @@ def simulate3d(
     total_b_param = get_total_b_param(
         scattering_params_b, atoms_id_filtered, atoms_b_factor_scaled
     )
+    # get the scattering parameters 'a' for each atom in a tensor
+    total_a_param = get_a_param(scattering_params_a, atoms_id_filtered)
 
     # Set up the simulation volume - push this out into a separate file grid_coords.py
     # Start with upsampling to improve accuracy
@@ -447,34 +290,18 @@ def simulate3d(
         this_coords - atom_indices - PIXEL_OFFSET
     )  # this is offset from the edge of the voxel
 
-    # Now divide into chunks for parallel processing
-
-    # atoms_per_device = len(atoms_id_filtered) // num_devices
-    device_outputs = []
-    # device_args = []
-    if devices[0].type == "cpu":
-        # If CPU only, use the original parallel processing directly
-        volume_grid = process_atoms_parallel(
-            atom_indices=atom_indices,
-            atom_dds=atom_dds,
-            bPlusB=total_b_param,
-            scattering_params_a=scattering_params_a,
-            atoms_id_filtered=atoms_id_filtered,
-            voxel_offsets_flat=voxel_offsets_flat,
-            upsampled_shape=upsampled_shape,
-            upsampled_pixel_size=upsampled_pixel_size,
-            lead_term=lead_term,
-            n_cores=n_cpu_cores,
-        )
-        device_outputs = [volume_grid]
-    else:
-        print("Not done this yet!")
-
-    # Combine results from all devices
-    main_device = devices[0]
-    final_volume = torch.zeros(upsampled_shape, device=main_device)
-    for volume in device_outputs:
-        final_volume += volume.to(main_device)
+    final_volume = process_atoms_single_thread(
+        atom_indices=atom_indices,
+        atom_dds=atom_dds,
+        bPlusB=total_b_param,
+        scattering_params_a=total_a_param,
+        voxel_offsets_flat=voxel_offsets_flat,
+        upsampled_shape=upsampled_shape,
+        upsampled_pixel_size=upsampled_pixel_size,
+        lead_term=lead_term,
+        n_cores=n_cpu_cores,
+        device=torch.device("cpu"),
+    )
 
     # Convert to Fourier space for filtering
     final_volume = torch.fft.fftshift(final_volume, dim=(-3, -2, -1))
@@ -508,25 +335,8 @@ def simulate3d(
             final_volume_FFT *= dose_filter**0.5
         else:
             final_volume_FFT *= dose_filter
-    # apply dqe
-    # I should really apply the mtf after Fourier cropping
-    # cisTEM does it before
-    """
-    if apply_dqe:
-        mtf_frequencies, mtf_amplitudes = read_mtf(
-            file_path=mtf_filename
-        )
-        mtf = make_mtf_grid(
-            image_shape=final_volume.shape,
-            mtf_frequencies=mtf_frequencies, #1D tensor
-            mtf_amplitudes=mtf_amplitudes, #1D tensor
-            rfft=True,
-            fftshift=False,
-        )
-        final_volume_FFT *= mtf
-    """
-    # fourier crop back to desired output size
 
+    # fourier crop back to desired output size
     if upsampling > 1:
         final_volume_FFT = fourier_rescale_3d_force_size(
             volume_fft=final_volume_FFT,
@@ -536,15 +346,9 @@ def simulate3d(
             fftshift=False,
         )
 
+    # If I apply dqe before Fourier cropping like cisTEM the output is the same.
+    # I apply it after Fourier cropping
     if apply_dqe:
-        """
-        mtf = get_dqe_parameterized(
-            image_shape=final_volume.shape,
-            pixel_size=upsampled_pixel_size,
-            rfft=True,
-            fftshift=False,
-        )
-        """
         mtf_frequencies, mtf_amplitudes = read_mtf(file_path=mtf_filename)
         mtf = make_mtf_grid(
             image_shape=sim_volume_shape,
