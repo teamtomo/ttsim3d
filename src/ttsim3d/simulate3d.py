@@ -10,8 +10,13 @@ import torch
 from torch_fourier_filter.dose_weight import cumulative_dose_filter_3d
 from torch_fourier_filter.mtf import make_mtf_grid, read_mtf
 
-from ttsim3d.device_handler import get_cpu_cores, select_gpus
-from ttsim3d.grid_coords import get_size_neighborhood_cistem, get_upsampling
+from ttsim3d.device_handler import select_gpu
+from ttsim3d.grid_coords import (
+    fourier_rescale_3d_force_size,
+    get_atom_voxel_indices,
+    get_upsampling,
+    get_voxel_neighborhood_offsets,
+)
 from ttsim3d.pdb_handler import load_model, remove_hydrogens
 from ttsim3d.scattering_potential import (
     calculate_relativistic_electron_wavelength,
@@ -25,85 +30,6 @@ BOND_SCALING_FACTOR = 1.043
 PIXEL_OFFSET = 0.5
 
 
-# This will definitely be moved to a different program
-def fourier_rescale_3d_force_size(
-    volume_fft: torch.Tensor,
-    volume_shape: tuple[int, int, int],
-    target_size: int,
-    rfft: bool = True,
-    fftshift: bool = False,
-) -> torch.Tensor:
-    """
-    Crop a 3D Fourier-transformed volume to a specific target size.
-
-    Parameters
-    ----------
-    volume_fft: torch.Tensor
-        The Fourier-transformed volume.
-    volume_shape: tuple[int, int, int]
-        The original shape of the volume.
-    target_size: int
-        The target size of the cropped volume.
-    rfft: bool
-        Whether the input is a real-to-complex Fourier Transform.
-    fftshift: bool
-        Whether the zero frequency is shifted to the center.
-
-    Returns
-    -------
-    - cropped_fft_shifted_back (torch.Tensor): The cropped fft
-    """
-    # Ensure the target size is even
-    assert target_size > 0, "Target size must be positive."
-
-    # Get the original size of the volume
-    assert (
-        volume_shape[0] == volume_shape[1] == volume_shape[2]
-    ), "Volume must be cubic."
-
-    # Step 1: Perform real-to-complex Fourier Transform (rfftn)
-    # and shift the zero frequency to the center
-    if not fftshift:
-        volume_fft = torch.fft.fftshift(
-            volume_fft, dim=(-3, -2, -1)
-        )  # Shift along first two dimensions only
-
-    # Calculate the dimensions of the rfftn output
-    rfft_size_z, rfft_size_y, rfft_size_x = volume_fft.shape
-
-    # Calculate cropping indices for each dimension
-    center_z = rfft_size_z // 2
-    center_y = rfft_size_y // 2
-    center_x = rfft_size_x // 2
-
-    # Define the cropping ranges
-    crop_start_z = int(center_z - target_size // 2)
-    crop_end_z = int(crop_start_z + target_size)
-    crop_start_y = int(center_y - target_size // 2)
-    crop_end_y = int(crop_start_y + target_size)
-    crop_start_x = int(center_x - target_size // 2)
-    crop_end_x = int(
-        target_size // 2 + 1
-    )  # Crop from the high-frequency end only along the last dimension
-
-    # Step 2: Crop the Fourier-transformed volume
-    cropped_fft = torch.zeros_like(volume_fft)
-    if rfft:
-        cropped_fft = volume_fft[
-            crop_start_z:crop_end_z, crop_start_y:crop_end_y, -crop_end_x:
-        ]
-    else:
-        crop_end_x = int(crop_start_x + target_size)
-        cropped_fft = volume_fft[
-            crop_start_z:crop_end_z, crop_start_y:crop_end_y, crop_start_x:crop_end_x
-        ]
-
-    # Step 3: Inverse shift and apply the inverse rFFT to return to real space
-    cropped_fft_shifted_back = torch.fft.ifftshift(cropped_fft, dim=(-3, -2))
-
-    return cropped_fft_shifted_back
-
-
 def process_atoms_single_thread(
     atom_indices: torch.Tensor,
     atom_dds: torch.Tensor,
@@ -113,7 +39,6 @@ def process_atoms_single_thread(
     upsampled_shape: tuple[int, int, int],
     upsampled_pixel_size: float,
     lead_term: float,
-    n_cores: int = 1,
     device: torch.device = None,
 ) -> torch.Tensor:
     """
@@ -182,9 +107,7 @@ def simulate3d(
     b_scaling: float = 1.0,
     added_B: float = 0.0,
     upsampling: int = -1,  # -1 is calculate automatically
-    n_cpu_cores: int = 1,  # -1 id get automatically
-    gpu_ids: Optional[list[int]] = None,  # [-999] cpu, [-1] auto, [0, 1] etc=gpuid
-    num_gpus: int = 1,
+    gpu_id: Optional[int] = -999,  # -999 cpu, -1 auto, 0 = gpuid
     modify_signal: int = 1,
 ) -> None:
     """
@@ -205,7 +128,7 @@ def simulate3d(
         b_scaling: The B scaling factor.
         added_B: The added B factor.
         upsampling: The upsampling factor.
-        n_cpu_cores: The number of CPU cores.
+        n_cores: The number of CPU cores.
         gpu_ids: The list of GPU IDs.
         num_gpus: The number of GPUs.
         modify_signal: The signal modification factor.
@@ -226,14 +149,11 @@ def simulate3d(
     scattering_params_a, scattering_params_b = get_scattering_parameters()
 
     # Select devices
-    if gpu_ids == [-999]:  # Special case for CPU-only
-        devices = [torch.device("cpu")]
+    if gpu_id == -999:  # Special case for CPU-only
+        device = torch.device("cpu")
     else:
-        devices = select_gpus(gpu_ids, num_gpus)
-    if devices[0].type == "cpu":
-        if n_cpu_cores == -1:
-            n_cpu_cores = get_cpu_cores()
-    print(f"Using devices: {[str(device) for device in devices]}")
+        device = select_gpu(gpu_id)
+    print(f"Using device: {device!s}")
 
     # Then load pdb (a separate file) and get non-H atom
     # list with zyx coords and isotropic b factors
@@ -261,35 +181,23 @@ def simulate3d(
     )
     upsampled_pixel_size = sim_pixel_spacing / upsampling
     upsampled_shape = tuple(np.array(sim_volume_shape) * upsampling)
-    # Get the centre if the upsampled volume
-    origin_idx = (
-        upsampled_shape[0] / 2,
-        upsampled_shape[1] / 2,
-        upsampled_shape[2] / 2,
-    )
-    # Get the size of the voxel neighbourhood to calculate the potential of each atom
-    size_neighborhood = get_size_neighborhood_cistem(
-        mean_b_factor, upsampled_pixel_size
-    )
-    neighborhood_range = torch.arange(-size_neighborhood, size_neighborhood + 1)
-    # Create coordinate grids for the neighborhood
-    sz, sy, sx = torch.meshgrid(
-        neighborhood_range, neighborhood_range, neighborhood_range, indexing="ij"
-    )
-    voxel_offsets = torch.stack([sz, sy, sx])  # (3, n, n, n)
-    # Flatten while preserving the relative positions
-    voxel_offsets_flat = voxel_offsets.reshape(3, -1).T  # (n^3, 3)
-    # Calculate the pixel coordinates of each atom
-    this_coords = (
-        (atoms_zyx_filtered / upsampled_pixel_size)
-        + torch.tensor(origin_idx).unsqueeze(0)
-        + PIXEL_OFFSET
-    )
-    atom_indices = torch.floor(this_coords)  # these are the voxel indices
-    atom_dds = (
-        this_coords - atom_indices - PIXEL_OFFSET
-    )  # this is offset from the edge of the voxel
 
+    # Calculate the voxel coordinates of each atom
+    atom_indices, atom_dds = get_atom_voxel_indices(
+        atom_zyx=atoms_zyx_filtered,
+        upsampled_pixel_size=upsampled_pixel_size,
+        upsampled_shape=upsampled_shape,
+        offset=PIXEL_OFFSET,
+    )
+
+    # Get the voxel offsets for the neighborhood around the atom voxel
+    voxel_offsets_flat = get_voxel_neighborhood_offsets(
+        mean_b_factor=mean_b_factor,
+        upsampled_pixel_size=upsampled_pixel_size,
+    )
+
+    # Calcaulte the scattering potential
+    final_volume = torch.zeros(upsampled_shape, dtype=torch.float32, device=device)
     final_volume = process_atoms_single_thread(
         atom_indices=atom_indices,
         atom_dds=atom_dds,
@@ -299,8 +207,7 @@ def simulate3d(
         upsampled_shape=upsampled_shape,
         upsampled_pixel_size=upsampled_pixel_size,
         lead_term=lead_term,
-        n_cores=n_cpu_cores,
-        device=torch.device("cpu"),
+        device=device,
     )
 
     # Convert to Fourier space for filtering

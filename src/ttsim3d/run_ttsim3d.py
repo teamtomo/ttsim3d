@@ -20,9 +20,7 @@ def main() -> None:
         b_scaling=0.5,
         added_B=0.0,
         upsampling=-1,
-        n_cpu_cores=-1,
-        gpu_ids=[-999],
-        num_gpus=0,
+        gpu_id=-999,
         modify_signal=1,  # This is how to apply the dose weighting.
     )
 
