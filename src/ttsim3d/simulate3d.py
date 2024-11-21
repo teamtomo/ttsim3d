@@ -4,9 +4,9 @@ import time
 from typing import Optional
 
 import einops
-import mrcfile
 import numpy as np
 import torch
+from torch_fourier_filter.ctf import calculate_relativistic_electron_wavelength
 from torch_fourier_filter.dose_weight import cumulative_dose_filter_3d
 from torch_fourier_filter.mtf import make_mtf_grid, read_mtf
 
@@ -17,9 +17,9 @@ from ttsim3d.grid_coords import (
     get_upsampling,
     get_voxel_neighborhood_offsets,
 )
+from ttsim3d.mrc_handler import tensor_to_mrc
 from ttsim3d.pdb_handler import load_model, remove_hydrogens
 from ttsim3d.scattering_potential import (
-    calculate_relativistic_electron_wavelength,
     get_a_param,
     get_scattering_parameters,
     get_scattering_potential_of_voxel_batch,
@@ -128,9 +128,7 @@ def simulate3d(
         b_scaling: The B scaling factor.
         added_B: The added B factor.
         upsampling: The upsampling factor.
-        n_cores: The number of CPU cores.
-        gpu_ids: The list of GPU IDs.
-        num_gpus: The number of GPUs.
+        gpu_ids: The specified GPU id (-999 cpu, -1 auto)
         modify_signal: The signal modification factor.
 
     Returns
@@ -140,6 +138,7 @@ def simulate3d(
     # This is the main program
     start_time = time.time()
     # Get the wavelength from the beam energy
+    print("Loading scattering parameter fits")
     wavelength_A = (
         calculate_relativistic_electron_wavelength(beam_energy_kev * 1000) * 1e10
     )
@@ -157,12 +156,14 @@ def simulate3d(
 
     # Then load pdb (a separate file) and get non-H atom
     # list with zyx coords and isotropic b factors
+    print("Loading PDB model")
     atoms_zyx, atoms_id, atoms_b_factor = load_model(pdb_filename)
     atoms_zyx_filtered, atoms_id_filtered, atoms_b_factor_filtered = remove_hydrogens(
         atoms_zyx, atoms_id, atoms_b_factor
     )
     # Scale the B-factors (now doing it after filtered unlike before)
     # the 0.25 is strange but keeping like cisTEM for now
+    print("Calculating scattering parameters")
     atoms_b_factor_scaled = 0.25 * (atoms_b_factor_filtered * b_scaling + added_B)
     mean_b_factor = torch.mean(atoms_b_factor_scaled)
     # Get the B parameter for each atom plus scattering parameter B
@@ -174,6 +175,7 @@ def simulate3d(
 
     # Set up the simulation volume - push this out into a separate file grid_coords.py
     # Start with upsampling to improve accuracy
+    print("Setting up simulation volume")
     upsampling = (
         get_upsampling(sim_pixel_spacing, sim_volume_shape[0], max_size=1536)
         if upsampling == -1
@@ -197,6 +199,7 @@ def simulate3d(
     )
 
     # Calcaulte the scattering potential
+    print("Calculating scattering potential for all atoms")
     final_volume = torch.zeros(upsampled_shape, dtype=torch.float32, device=device)
     final_volume = process_atoms_single_thread(
         atom_indices=atom_indices,
@@ -211,10 +214,12 @@ def simulate3d(
     )
 
     # Convert to Fourier space for filtering
+
     final_volume = torch.fft.fftshift(final_volume, dim=(-3, -2, -1))
     final_volume_FFT = torch.fft.rfftn(final_volume, dim=(-3, -2, -1))
     # Dose weight
     if dose_weighting:
+        print("Dose weighting")
         dose_filter = cumulative_dose_filter_3d(
             volume_shape=final_volume.shape,
             num_frames=num_frames,
@@ -245,6 +250,7 @@ def simulate3d(
 
     # fourier crop back to desired output size
     if upsampling > 1:
+        print("Fourier cropping back to desired size")
         final_volume_FFT = fourier_rescale_3d_force_size(
             volume_fft=final_volume_FFT,
             volume_shape=final_volume.shape,
@@ -256,6 +262,7 @@ def simulate3d(
     # If I apply dqe before Fourier cropping like cisTEM the output is the same.
     # I apply it after Fourier cropping
     if apply_dqe:
+        print("Applying a DQE")
         mtf_frequencies, mtf_amplitudes = read_mtf(file_path=mtf_filename)
         mtf = make_mtf_grid(
             image_shape=sim_volume_shape,
@@ -274,14 +281,16 @@ def simulate3d(
     )
     cropped_volume = torch.fft.ifftshift(cropped_volume, dim=(-3, -2, -1))
 
-    # Write now for testing
-    with mrcfile.new(output_filename, overwrite=True) as mrc:
-        mrc.set_data(cropped_volume.cpu().numpy())
-        mrc.voxel_size = (sim_pixel_spacing, sim_pixel_spacing, sim_pixel_spacing)
-        # Populate more of the metadata...
+    print("Writing mrc file")
+    tensor_to_mrc(
+        output_filename=output_filename,
+        final_volume=cropped_volume,
+        sim_pixel_spacing=sim_pixel_spacing,
+    )
 
     end_time = time.time()
     elapsed_time = end_time - start_time
     minutes = int(elapsed_time // 60)
     seconds = int(elapsed_time % 60)
+    print("Finished simulation")
     print(f"Total simulation time: {minutes} minutes {seconds} seconds")
