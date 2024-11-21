@@ -10,17 +10,22 @@ def tensor_to_mrc(
     final_volume: torch.Tensor,
     sim_pixel_spacing: float,
 ) -> None:
-    """
-    Write the final volume to an MRC file.
+    """Write the final volume to an MRC file.
 
-    Args:
-        output_filename: The output filename.
-        final_volume: The final volume.
-        sim_pixel_spacing: The pixel spacing in the simulation.
+    NOTE: This function is only for 3D volumetric data; 2D data is not supported.
+
+    Parameters
+    ----------
+    output_filename : str
+        Path to the output MRC file.
+    final_volume : torch.Tensor
+        Volume information to write to the MRC file.
+    sim_pixel_spacing :
+        The pixel spacing in the simulation.
 
     Returns
     -------
-        None
+    None
     """
     write_volume = final_volume.cpu().numpy()
     with mrcfile.new(output_filename, overwrite=True) as mrc:

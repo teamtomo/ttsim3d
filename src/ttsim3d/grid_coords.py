@@ -7,17 +7,21 @@ import torch
 def get_upsampling(
     wanted_pixel_size: float, wanted_output_size: int, max_size: int = 1536
 ) -> int:
-    """
-    Calculate the upsampling factor for the simulation volume.
+    """Calculate the upsampling factor for the simulation volume.
 
-    Args:
-        wanted_pixel_size: The pixel size in Angstroms.
-        wanted_output_size: The output size of the 3D volume.
-        max_size: The maximum size of the 3D volume.
+    Parameters
+    ----------
+    wanted_pixel_size : float
+        The pixel size in Angstroms.
+    wanted_output_size : float
+        The output size of the cubic volume.
+    max_size : int
+        Optional maximum size of the volume. Default is 1536.
 
     Returns
     -------
-        int: The upsampling factor.
+    int
+        The upsampling factor.
     """
     if wanted_pixel_size > 1.5 and wanted_output_size * 4 < max_size:
         print("Oversampling your 3d by a factor of 4 for calculation.")
@@ -36,17 +40,23 @@ def get_atom_voxel_indices(
     upsampled_shape: tuple[int, int, int],
     offset: float = 0.5,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    Calculate the voxel indices of the atoms.
+    """Calculate the voxel indices of the atoms.
 
-    Args:
-        atom_zyx: The atom coordinates in Angstroms.
-        upsampled_pixel_size: The pixel size in Angstroms.
-        upsampled_shape: The shape of the upsampled volume.
+    Parameters
+    ----------
+    atom_zyx : torch.Tensor
+        The atom coordinates in Angstroms.
+    upsampled_pixel_size : float
+        The pixel size in Angstroms.
+    upsampled_shape : tuple[int, int, int]
+        The shape of the upsampled volume.
+    offset : float
+        Optional voxel edge offset in units of voxels. Default is 0.5.
 
     Returns
     -------
-        tuple[torch.Tensor,torch.Tensor]: The voxel indices + offsets of the atoms.
+    tuple[torch.Tensor,torch.Tensor]
+        The voxel indices and the offset from the edge of the voxel.
     """
     origin_idx = (
         upsampled_shape[0] / 2,
@@ -69,21 +79,24 @@ def get_atom_voxel_indices(
 def get_size_neighborhood_cistem(
     mean_b_factor: float, upsampled_pixel_size: float
 ) -> int:
-    """
-    Calculate the size of the neighborhood of voxels.
+    """Calculate the size of the neighborhood of voxels (mirrors cisTEM).
 
-    Args:
-        mean_b_factor: The mean B factor of the atoms.
-        upsampled_pixel_size: The pixel size in Angstroms.
+    Parameters
+    ----------
+    mean_b_factor : float
+        The mean B factor over all the atoms.
+    upsampled_pixel_size : float
+        The pixel size in Angstroms.
 
     Returns
     -------
-        int: The size of the neighborhood.
+    int
+        The size (number of voxels in one direction) of the neighborhood.
     """
-    return int(
-        1
-        + torch.round((0.4 * (0.6 * mean_b_factor) ** 0.5 + 0.2) / upsampled_pixel_size)
-    )
+    tmp = 0.4 * (0.6 * mean_b_factor) ** 0.5 + 0.2
+    tmp = torch.round(tmp / upsampled_pixel_size)
+
+    return int(tmp + 1)
 
 
 def get_voxel_neighborhood_offsets(
@@ -94,13 +107,17 @@ def get_voxel_neighborhood_offsets(
     Calculate the offsets of the voxel neighborhood. Returned as a flat tensor
     with shape (n^3, 3) where n is the size of the neighborhood in one dimension.
 
-    Args:
-        mean_b_factor: The mean B factor of the atoms.
-        upsampled_pixel_size: The pixel size in Angstroms.
+    Parameters
+    ----------
+    mean_b_factor : float
+        The mean B factor of the atoms.
+    upsampled_pixel_size : float
+        The pixel size in Angstroms.
 
     Returns
     -------
-        torch.Tensor: The offsets of the voxel neighborhood.
+    torch.Tensor
+        The offsets of the voxel neighborhood.
 
     """
     # Get the size of the voxel neighbourhood to calculate the potential of each atom
@@ -134,20 +151,21 @@ def fourier_rescale_3d_force_size(
 
     Parameters
     ----------
-    volume_fft: torch.Tensor
+    volume_fft : torch.Tensor
         The Fourier-transformed volume.
-    volume_shape: tuple[int, int, int]
+    volume_shape : tuple[int, int, int]
         The original shape of the volume.
-    target_size: int
+    target_size : int
         The target size of the cropped volume.
-    rfft: bool
+    rfft : bool
         Whether the input is a real-to-complex Fourier Transform.
-    fftshift: bool
+    fftshift : bool
         Whether the zero frequency is shifted to the center.
 
     Returns
     -------
-    - cropped_fft_shifted_back (torch.Tensor): The cropped fft
+    cropped_fft_shifted_back : torch.Tensor
+        The cropped fft
     """
     # Ensure the target size is even
     assert target_size > 0, "Target size must be positive."

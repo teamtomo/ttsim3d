@@ -130,8 +130,26 @@ MAX_SIZE = 1536
 def _setup_sim3d_upsampling(
     sim_pixel_spacing: float,
     sim_volume_shape: tuple[int, int, int],
-    upsampling: float | int,
-) -> tuple[float | int, float, tuple[int, int, int]]:
+    upsampling: int,
+) -> tuple[int, float, tuple[int, int, int]]:
+    """Helper function to calculate upsampling factor and related values.
+
+    Parameters
+    ----------
+    sim_pixel_spacing : float
+        Desired final pixel spacing for simulation in Angstroms.
+    sim_volume_shape : tuple[int, int, int]
+        Desired final shape of the simulation volume. NOTE: simulations currently
+        only support cubic volumes, but this is not explicitly checked.
+    upsampling : int
+        The upsampling factor as an int greater than 1 or -1. If -1, the
+        upsampling factor is calculated automatically.
+
+    Returns
+    -------
+    tuple[int, float, tuple[int, int, int]]
+        The upsampling factor, the upsampled pixel size, and the upsampled shape.
+    """
     if upsampling == -1:
         upsampling = get_upsampling(
             sim_pixel_spacing, sim_volume_shape[0], max_size=MAX_SIZE
@@ -151,6 +169,26 @@ def _setup_upsampling_coords(
     upsampled_shape: tuple[int, int, int],
     mean_b_factor: float,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Helper function to calculate the voxel indices and offsets for upsampling.
+
+    Parameters
+    ----------
+    atom_positions_zyx : torch.Tensor
+        The atom coordinates in Angstroms. Shape (N, 3) where N is the number
+        of atoms.
+    upsampled_pixel_size : float
+        The pixel size in Angstroms for the upsampled volume.
+    upsampled_shape : tuple[int, int, int]
+        The shape of the upsampled volume.
+    mean_b_factor : float
+        The mean B factor of the atoms.
+
+    Returns
+    -------
+    tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+        The atom indices, atom dds, and voxel offsets for the neighborhood.
+        Each tensor has shape (N, 3).
+    """
     # Calculate the voxel coordinates of each atom
     atom_indices, atom_dds = get_atom_voxel_indices(
         atom_zyx=atom_positions_zyx,
@@ -173,21 +211,23 @@ def place_voxel_neighborhoods_in_volume(
     voxel_positions: torch.LongTensor,  # shape (N, h*w*d, 3)
     final_volume: torch.Tensor,  # shape (H, W, D)
 ) -> torch.Tensor:
-    """
-    Places pre-calculate voxel neighborhoods (N, h, w, d) into the volume (H, W, D).
+    """Places pre-calculate voxels of (N, h, w, d) into the volume (H, W, D).
 
-    Args:
-    -----
-    neighborhood_potentials (torch.Tensor): The pre-calculated scattering potential in
-        voxel neighborhoods around each atom. Shape (N, h, w, d).
-    voxel_positions (torch.LongTensor): The voxel offset positions for each of the
-        neighborhoods. Shape (N, 3) with last dim being (x, y z)???.
-    final_volume (torch.Tensor): The final volume to place the neighborhoods into.
-        Shape (H, W, D).
+    Parameters
+    ----------
+    neighborhood_potentials : torch.Tensor
+        The pre-calculated scattering potentials in voxel neighborhoods around
+        each atom. Shape (N, h*w*d).
+    voxel_positions : torch.LongTensor
+        The voxel offset positions for each of the neighborhoods. Shape (N, 3)
+        with last dim representing (x, y z).
+    final_volume : torch.Tensor
+        The final volume to place the neighborhoods into. Shape (H, W, D).
 
     Returns
     -------
-    torch.Tensor: The final volume with the neighborhoods placed in.
+    torch.Tensor
+        The final volume with the neighborhoods placed in.
     """
     index_positions = voxel_positions.long()
     final_volume.index_put_(
@@ -217,7 +257,7 @@ def simulate3d(
     mtf_filename: str = "",
     b_scaling: float = 1.0,
     added_B: float = 0.0,
-    upsampling: float | int = -1,  # -1 is calculate automatically
+    upsampling: int = -1,  # -1 is calculate automatically
     gpu_id: Optional[int] = -999,  # -999 cpu, -1 auto, 0 = gpuid
     modify_signal: int = 1,
 ) -> None:
