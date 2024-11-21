@@ -31,10 +31,10 @@ def get_scattering_parameters() -> tuple[dict, dict]:
     return scattering_params_a, scattering_params_b
 
 
-def get_a_param(
-    scattering_params_a: dict,
-    atoms_id_filtered: list[str],
-) -> torch.Tensor:
+SCATTERING_PARAMS_A, SCATTERING_PARAMS_B = get_scattering_parameters()
+
+
+def get_a_param(atoms_id_filtered: list[str]) -> torch.Tensor:
     """
     Get the 'a' scattering parameters.
 
@@ -50,16 +50,37 @@ def get_a_param(
             Scattering parameters for each atom in the neighborhood
     """
     # Iterate over each atom_id in atoms_id_filtered
-    params_list = [scattering_params_a[atom_id] for atom_id in atoms_id_filtered]
+    params_list = [SCATTERING_PARAMS_A[atom_id] for atom_id in atoms_id_filtered]
+    # Convert the list to a PyTorch tensor with the desired shape
+    params_tensor = torch.tensor(params_list)
+    return params_tensor
+
+
+def get_b_param(atoms_id_filtered: list[str]) -> torch.Tensor:
+    """
+    Get the 'a' scattering parameters.
+
+    Args:
+        scattering_params_a: dict
+            Scattering parameters for atom type A.
+        atoms_id_filtered: list[str]
+            Atom IDs.
+
+    Returns
+    -------
+        params_tensor: torch.Tensor
+            Scattering parameters for each atom in the neighborhood
+    """
+    # Iterate over each atom_id in atoms_id_filtered
+    params_list = [SCATTERING_PARAMS_B[atom_id] for atom_id in atoms_id_filtered]
     # Convert the list to a PyTorch tensor with the desired shape
     params_tensor = torch.tensor(params_list)
     return params_tensor
 
 
 def get_total_b_param(
-    scattering_params_b: dict,
-    atoms_id_filtered: list[str],
-    atoms_b_factor_scaled_filtered: torch.Tensor,
+    atom_ids: list[str],
+    atom_b_factors: torch.Tensor,
 ) -> torch.Tensor:
     """
     Calculate the total B parameter for each atom in the neighborhood.
@@ -78,13 +99,9 @@ def get_total_b_param(
             Total B parameter for each atom in the neighborhood.
     """
     b_params = torch.stack(
-        [torch.tensor(scattering_params_b[atom_id]) for atom_id in atoms_id_filtered]
+        [torch.tensor(SCATTERING_PARAMS_B[a_id]) for a_id in atom_ids]
     )
-    bPlusB = (
-        2
-        * torch.pi
-        / torch.sqrt(atoms_b_factor_scaled_filtered.unsqueeze(1) + b_params)
-    )
+    bPlusB = 2 * torch.pi / torch.sqrt(atom_b_factors.unsqueeze(1) + b_params)
     return bPlusB
 
 
@@ -150,13 +167,18 @@ def get_scattering_potential_of_voxel(
 def get_scattering_potential_of_voxel_batch(
     zyx_coords1: torch.Tensor,  # Shape: (atomN, voxelN, 3)
     zyx_coords2: torch.Tensor,  # Shape: (atomN, voxelN, 3)
-    bPlusB: torch.Tensor,  # Shape: (atomN, 5)
+    atom_ids: list[str],  # Shape: (atomN)
+    atom_b_factors: torch.Tensor,  # Shape: (atomN)
+    # bPlusB: torch.Tensor,  # Shape: (atomN, 5)
+    # scattering_params_a: torch.Tensor,  # Shape: (atomN, 5)
     lead_term: float,
-    scattering_params_a: torch.Tensor,  # Shape: (atomN, 5)
     device: torch.device = None,
 ) -> torch.Tensor:
     """
     Calculate scattering potential for all voxels in the neighborhood of of the atom.
+
+    Follows the equation 12 from https://journals.iucr.org/m/issues/2021/06/00/rq5007/index.html
+    for calculating the scattering potential per voxel.
 
     Args:
         zyx_coords1: torch.Tensor
@@ -179,9 +201,18 @@ def get_scattering_potential_of_voxel_batch(
         potential: torch.Tensor
             Scattering potential for all voxels in the neighborhood.
     """
+    # a   -> atom index with shape (n_atoms)
+    # d   -> dimension with shape (3)
+    # v/n -> flattened voxel indices for neighborhood with shape (h*w*d)
+    # i   -> scattering fit index with shape (5)
+
     # If device not specified, use the device of input tensors
     if device is None:
         device = zyx_coords1.device
+
+    # Get scattering parameters for atoms
+    params_a = get_a_param(atom_ids)
+    params_bPlusB = get_total_b_param(atom_ids, atom_b_factors)
 
     # Compare signs element-wise for batched coordinates
     t_all = (zyx_coords1 * zyx_coords2) >= 0  # Shape: (atomN, voxelN, 3)
@@ -191,17 +222,18 @@ def get_scattering_potential_of_voxel_batch(
     zyx_coords1 = einops.rearrange(zyx_coords1, "a n d -> a n d 1")
     zyx_coords2 = einops.rearrange(zyx_coords2, "a n d -> a n d 1")
     t_all = einops.rearrange(t_all, "a n d -> a n d 1")
-    bPlusB = einops.rearrange(bPlusB, "a i -> a 1 1 i")
+    params_bPlusB = einops.rearrange(params_bPlusB, "a i -> a 1 1 i")
 
     all_terms = torch.where(
         t_all,
-        torch.special.erf(bPlusB * zyx_coords2)
-        - torch.special.erf(bPlusB * zyx_coords1),
-        torch.abs(torch.special.erf(bPlusB * zyx_coords2))
-        + torch.abs(torch.special.erf(bPlusB * zyx_coords1)),
+        torch.special.erf(params_bPlusB * zyx_coords2)
+        - torch.special.erf(params_bPlusB * zyx_coords1),
+        torch.abs(torch.special.erf(params_bPlusB * zyx_coords2))
+        + torch.abs(torch.special.erf(params_bPlusB * zyx_coords1)),
     )
     t0 = einops.reduce(all_terms, "a n d i -> a n i", "prod")
-    scattering_params_a = einops.rearrange(scattering_params_a, "a i -> a 1 i")
-    a_mult = torch.abs(t0) * scattering_params_a
+    params_a = einops.rearrange(params_a, "a i -> a 1 i")
+    a_mult = torch.abs(t0) * params_a
     temp_potential = einops.reduce(a_mult, "a n i -> a n", "sum")
+
     return (lead_term * temp_potential).float()

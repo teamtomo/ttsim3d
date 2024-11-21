@@ -1,6 +1,8 @@
 """The main simulation function."""
 
 import time
+
+# from collections import namedtuple
 from typing import Optional
 
 import einops
@@ -20,75 +22,184 @@ from ttsim3d.grid_coords import (
 from ttsim3d.mrc_handler import tensor_to_mrc
 from ttsim3d.pdb_handler import load_model, remove_hydrogens
 from ttsim3d.scattering_potential import (
-    get_a_param,
-    get_scattering_parameters,
     get_scattering_potential_of_voxel_batch,
-    get_total_b_param,
 )
 
 BOND_SCALING_FACTOR = 1.043
 PIXEL_OFFSET = 0.5
+MAX_SIZE = 1536
+
+# Sim3DConstants = namedtuple(
+#     "Sim3DConstants",
+#     "wavelength_A lead_term scattering_params_a scattering_params_b",
+# )
 
 
-def process_atoms_single_thread(
-    atom_indices: torch.Tensor,
-    atom_dds: torch.Tensor,
-    bPlusB: torch.Tensor,
-    scattering_params_a: torch.Tensor,
-    voxel_offsets_flat: torch.Tensor,
-    upsampled_shape: tuple[int, int, int],
+# def process_atoms_single_thread(
+#     atom_indices: torch.Tensor,
+#     atom_dds: torch.Tensor,
+#     bPlusB: torch.Tensor,
+#     scattering_params_a: torch.Tensor,
+#     voxel_offsets_flat: torch.Tensor,
+#     upsampled_shape: tuple[int, int, int],
+#     upsampled_pixel_size: float,
+#     lead_term: float,
+#     device: torch.device = None,
+# ) -> torch.Tensor:
+#     """
+#     Process atoms in a single thread.
+
+#     Args:
+#         atom_indices: The indices of the atoms.
+#         atom_dds: The dds of the atoms.
+#         bPlusB: The B factor.
+#         scattering_params_a: The scattering parameters.
+#         voxel_offsets_flat: The flat voxel offsets.
+#         upsampled_shape: The upsampled shape.
+#         upsampled_pixel_size: The upsampled pixel size.
+#         lead_term: The lead term.
+#         n_cores: The number of cores.
+#         device: The device.
+
+#     Returns
+#     -------
+#         torch.Tensor: The final volume.
+#     """
+#     # a -> atom index with shape (n_atoms)
+#     # d -> dimension with shape (3)
+#     # v -> flattened voxel indices for neighborhood with shape (h*w*d)
+
+#     # Calculate voxel positions relative to atom center
+#     atom_pos = einops.rearrange(atom_indices, "a d -> a 1 d")
+#     voxel_offsets_flat = einops.rearrange(voxel_offsets_flat, "v d -> 1 v d")
+#     voxel_positions = atom_pos + voxel_offsets_flat  # (n_atoms, n^3, 3)
+
+#     # Calculate relative coordinates of each voxel in the neighborhood
+#     atom_dds = einops.rearrange(atom_dds, "a d -> a 1 d")
+#     relative_coords = (
+#         voxel_positions - atom_pos - atom_dds - PIXEL_OFFSET
+#     ) * upsampled_pixel_size
+#     coords1 = relative_coords
+#     coords2 = relative_coords + upsampled_pixel_size
+
+#     neighborhood_potentials = get_scattering_potential_of_voxel_batch(
+#         zyx_coords1=coords1,  # shape(a, v, d)
+#         zyx_coords2=coords2,  # shape(a, v, d)
+#         atom_ids=atom_ids,
+#         atom_b_factors=atom_b_factors,
+#         lead_term=lead_term,
+#     )
+
+#     # add to volume
+#     index_positions = voxel_positions.long()
+#     final_volume = torch.zeros(upsampled_shape, device=device)
+#     final_volume.index_put_(
+#         (
+#             index_positions[:, :, 0],
+#             index_positions[:, :, 1],
+#             index_positions[:, :, 2],
+#         ),
+#         potentials,
+#         accumulate=True,
+#     )
+#     return final_volume
+
+
+# def _setup_sim3d_constants(
+#     beam_energy_kev: float, sim_pixel_spacing: float
+# ) -> namedtuple:
+#     """Returns the necessary constants for the simulation."""
+#     # Relativistic electron beam wavelength in Angstroms
+#     beam_energy_ev = beam_energy_kev * 1000
+#     wavelength_m = calculate_relativistic_electron_wavelength(beam_energy_ev)
+#     wavelength_A = wavelength_m * 1e10
+
+#     # Lead term for the scattering potential
+#     lead_term = BOND_SCALING_FACTOR * wavelength_A / 8.0 / (sim_pixel_spacing**2)
+
+#     scattering_params_a, scattering_params_b = get_scattering_parameters()
+
+#     return Sim3DConstants(
+#         wavelength_A=wavelength_A,
+#         lead_term=lead_term,
+#         scattering_params_a=scattering_params_a,
+#         scattering_params_b=scattering_params_b,
+#     )
+
+
+def _setup_sim3d_upsampling(
+    sim_pixel_spacing: float,
+    sim_volume_shape: tuple[int, int, int],
+    upsampling: float | int,
+) -> tuple[float | int, float, tuple[int, int, int]]:
+    if upsampling == -1:
+        upsampling = get_upsampling(
+            sim_pixel_spacing, sim_volume_shape[0], max_size=MAX_SIZE
+        )
+    elif upsampling < 1:
+        raise ValueError("Upsampling factor must be greater than 1 (or -1 for auto)")
+
+    upsampled_pixel_size = sim_pixel_spacing / upsampling
+    upsampled_shape = tuple(np.array(sim_volume_shape) * upsampling)
+
+    return upsampling, upsampled_pixel_size, upsampled_shape
+
+
+def _setup_upsampling_coords(
+    atom_positions_zyx: torch.Tensor,  # shape (N, 3)
     upsampled_pixel_size: float,
-    lead_term: float,
-    device: torch.device = None,
+    upsampled_shape: tuple[int, int, int],
+    mean_b_factor: float,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    # Calculate the voxel coordinates of each atom
+    atom_indices, atom_dds = get_atom_voxel_indices(
+        atom_zyx=atom_positions_zyx,
+        upsampled_pixel_size=upsampled_pixel_size,
+        upsampled_shape=upsampled_shape,
+        offset=PIXEL_OFFSET,
+    )
+
+    # Get the voxel offsets for the neighborhood around the atom voxel
+    voxel_offsets_flat = get_voxel_neighborhood_offsets(
+        mean_b_factor=mean_b_factor,
+        upsampled_pixel_size=upsampled_pixel_size,
+    )
+
+    return atom_indices, atom_dds, voxel_offsets_flat
+
+
+def place_voxel_neighborhoods_in_volume(
+    neighborhood_potentials: torch.Tensor,  # shape (N, h*w*d)
+    voxel_positions: torch.LongTensor,  # shape (N, h*w*d, 3)
+    final_volume: torch.Tensor,  # shape (H, W, D)
 ) -> torch.Tensor:
     """
-    Process atoms in a single thread.
+    Places pre-calculate voxel neighborhoods (N, h, w, d) into the volume (H, W, D).
 
     Args:
-        atom_indices: The indices of the atoms.
-        atom_dds: The dds of the atoms.
-        bPlusB: The B factor.
-        scattering_params_a: The scattering parameters.
-        voxel_offsets_flat: The flat voxel offsets.
-        upsampled_shape: The upsampled shape.
-        upsampled_pixel_size: The upsampled pixel size.
-        lead_term: The lead term.
-        n_cores: The number of cores.
-        device: The device.
+    -----
+    neighborhood_potentials (torch.Tensor): The pre-calculated scattering potential in
+        voxel neighborhoods around each atom. Shape (N, h, w, d).
+    voxel_positions (torch.LongTensor): The voxel offset positions for each of the
+        neighborhoods. Shape (N, 3) with last dim being (x, y z)???.
+    final_volume (torch.Tensor): The final volume to place the neighborhoods into.
+        Shape (H, W, D).
 
     Returns
     -------
-        torch.Tensor: The final volume.
+    torch.Tensor: The final volume with the neighborhoods placed in.
     """
-    # Calculate voxel positions relative to atom center
-    atom_pos = einops.rearrange(atom_indices, "a d -> a 1 d")
-    voxel_offsets_flat = einops.rearrange(voxel_offsets_flat, "v d -> 1 v d")
-    voxel_positions = atom_pos + voxel_offsets_flat  # (n_atoms, n^3, 3)
-
-    # get relative coords
-    atom_dds = einops.rearrange(atom_dds, "a d -> a 1 d")
-    relative_coords = (
-        voxel_positions - atom_pos - atom_dds - PIXEL_OFFSET
-    ) * upsampled_pixel_size
-    coords1 = relative_coords
-    coords2 = relative_coords + upsampled_pixel_size
-
-    potentials = get_scattering_potential_of_voxel_batch(
-        zyx_coords1=coords1,
-        zyx_coords2=coords2,
-        bPlusB=bPlusB,
-        lead_term=lead_term,
-        scattering_params_a=scattering_params_a,  # Pass the parameters
-    )  # shape(a, v)
-
-    # add to volume
     index_positions = voxel_positions.long()
-    final_volume = torch.zeros(upsampled_shape, device=device)
     final_volume.index_put_(
-        (index_positions[:, :, 0], index_positions[:, :, 1], index_positions[:, :, 2]),
-        potentials,
+        indices=(
+            index_positions[:, :, 0],
+            index_positions[:, :, 1],
+            index_positions[:, :, 2],
+        ),
+        values=neighborhood_potentials,
         accumulate=True,
     )
+
     return final_volume
 
 
@@ -106,7 +217,7 @@ def simulate3d(
     mtf_filename: str = "",
     b_scaling: float = 1.0,
     added_B: float = 0.0,
-    upsampling: int = -1,  # -1 is calculate automatically
+    upsampling: float | int = -1,  # -1 is calculate automatically
     gpu_id: Optional[int] = -999,  # -999 cpu, -1 auto, 0 = gpuid
     modify_signal: int = 1,
 ) -> None:
@@ -135,83 +246,123 @@ def simulate3d(
     -------
         None
     """
-    # This is the main program
-    start_time = time.time()
-    # Get the wavelength from the beam energy
-    print("Loading scattering parameter fits")
-    wavelength_A = (
-        calculate_relativistic_electron_wavelength(beam_energy_kev * 1000) * 1e10
-    )
-    # Get lead term, call it something better and move it out elsewhere
-    lead_term = BOND_SCALING_FACTOR * wavelength_A / 8.0 / (sim_pixel_spacing**2)
-    # get the scattering parameters
-    scattering_params_a, scattering_params_b = get_scattering_parameters()
-
     # Select devices
     if gpu_id == -999:  # Special case for CPU-only
         device = torch.device("cpu")
     else:
         device = select_gpu(gpu_id)
-    print(f"Using device: {device!s}")
+    print(f"Using device: {device!s}")  # TODO: Move to logging
+
+    # This is the main program
+    start_time = time.time()
+
+    #################
+    ### Constants ###
+    #################
+
+    # const = _setup_sim3d_constants(
+    #     beam_energy_kev=beam_energy_kev,
+    #     sim_pixel_spacing=sim_pixel_spacing,
+    # )
+    # wavelength_A = const.wavelength_A
+    # lead_term = const.wavelength_A
+    # scattering_params_a = const.wavelength_A
+    # scattering_params_b = const.wavelength_A
+
+    beam_energy_ev = beam_energy_kev * 1000
+    wavelength_m = calculate_relativistic_electron_wavelength(beam_energy_ev)
+    wavelength_A = wavelength_m * 1e10
+    lead_term = BOND_SCALING_FACTOR * wavelength_A / 8.0 / (sim_pixel_spacing**2)
+
+    #########################################
+    ### PDB model to coords/ids/b-factors ###
+    #########################################
 
     # Then load pdb (a separate file) and get non-H atom
     # list with zyx coords and isotropic b factors
-    print("Loading PDB model")
-    atoms_zyx, atoms_id, atoms_b_factor = load_model(pdb_filename)
-    atoms_zyx_filtered, atoms_id_filtered, atoms_b_factor_filtered = remove_hydrogens(
-        atoms_zyx, atoms_id, atoms_b_factor
+    print("Loading PDB model")  # TODO: Move to logging
+    atom_pos_zyx, atom_ids, atom_b_factors = load_model(pdb_filename)
+    atom_pos_zyx, atom_ids, atom_b_factors = remove_hydrogens(
+        atom_pos_zyx, atom_ids, atom_b_factors
     )
+
     # Scale the B-factors (now doing it after filtered unlike before)
-    # the 0.25 is strange but keeping like cisTEM for now
-    print("Calculating scattering parameters")
-    atoms_b_factor_scaled = 0.25 * (atoms_b_factor_filtered * b_scaling + added_B)
-    mean_b_factor = torch.mean(atoms_b_factor_scaled)
-    # Get the B parameter for each atom plus scattering parameter B
-    total_b_param = get_total_b_param(
-        scattering_params_b, atoms_id_filtered, atoms_b_factor_scaled
-    )
-    # get the scattering parameters 'a' for each atom in a tensor
-    total_a_param = get_a_param(scattering_params_a, atoms_id_filtered)
+    # NOTE: the 0.25 is strange but keeping like cisTEM for now
+    print("Calculating scattering parameters")  # TODO: Move to logging
+    atom_b_factors = 0.25 * (atom_b_factors * b_scaling + added_B)
+    mean_b_factor = torch.mean(atom_b_factors)
 
-    # Set up the simulation volume - push this out into a separate file grid_coords.py
-    # Start with upsampling to improve accuracy
-    print("Setting up simulation volume")
-    upsampling = (
-        get_upsampling(sim_pixel_spacing, sim_volume_shape[0], max_size=1536)
-        if upsampling == -1
-        else upsampling
-    )
-    upsampled_pixel_size = sim_pixel_spacing / upsampling
-    upsampled_shape = tuple(np.array(sim_volume_shape) * upsampling)
+    ######################################
+    ### Calculations on upsampled grid ###
+    ######################################
 
-    # Calculate the voxel coordinates of each atom
-    atom_indices, atom_dds = get_atom_voxel_indices(
-        atom_zyx=atoms_zyx_filtered,
+    upsampling, upsampled_pixel_size, upsampled_shape = _setup_sim3d_upsampling(
+        sim_pixel_spacing=sim_pixel_spacing,
+        sim_volume_shape=sim_volume_shape,
+        upsampling=upsampling,
+    )
+
+    atom_indices, atom_dds, voxel_offsets_flat = _setup_upsampling_coords(
+        atom_positions_zyx=atom_pos_zyx,
         upsampled_pixel_size=upsampled_pixel_size,
         upsampled_shape=upsampled_shape,
-        offset=PIXEL_OFFSET,
-    )
-
-    # Get the voxel offsets for the neighborhood around the atom voxel
-    voxel_offsets_flat = get_voxel_neighborhood_offsets(
         mean_b_factor=mean_b_factor,
-        upsampled_pixel_size=upsampled_pixel_size,
     )
 
-    # Calcaulte the scattering potential
-    print("Calculating scattering potential for all atoms")
-    final_volume = torch.zeros(upsampled_shape, dtype=torch.float32, device=device)
-    final_volume = process_atoms_single_thread(
-        atom_indices=atom_indices,
-        atom_dds=atom_dds,
-        bPlusB=total_b_param,
-        scattering_params_a=total_a_param,
-        voxel_offsets_flat=voxel_offsets_flat,
-        upsampled_shape=upsampled_shape,
-        upsampled_pixel_size=upsampled_pixel_size,
+    # Reshaping tensors for future broadcasting
+    atom_pos = einops.rearrange(atom_indices, "a d -> a 1 d")
+    atom_dds = einops.rearrange(atom_dds, "a d -> a 1 d")
+    voxel_offsets_flat = einops.rearrange(voxel_offsets_flat, "v d -> 1 v d")
+
+    # Calculate voxel positions relative to atom center
+    voxel_positions = atom_pos + voxel_offsets_flat  # (n_atoms, h*w*d, 3)
+
+    # Calculate relative coordinates of each voxel in the neighborhood
+    relative_coords = (
+        voxel_positions - atom_pos - atom_dds - PIXEL_OFFSET
+    ) * upsampled_pixel_size
+    coords1 = relative_coords
+    coords2 = relative_coords + upsampled_pixel_size
+
+    ########################################
+    ### Scattering potential calculation ###
+    ########################################
+
+    neighborhood_potentials = get_scattering_potential_of_voxel_batch(
+        zyx_coords1=coords1,  # shape(a, v, d)
+        zyx_coords2=coords2,  # shape(a, v, d)
+        atom_ids=atom_ids,
+        atom_b_factors=atom_b_factors,
         lead_term=lead_term,
-        device=device,
     )
+
+    final_volume = torch.zeros(upsampled_shape, dtype=torch.float32, device=device)
+    final_volume = place_voxel_neighborhoods_in_volume(
+        neighborhood_potentials=neighborhood_potentials,
+        voxel_positions=voxel_positions,
+        final_volume=final_volume,
+    )
+
+    # # Calculate the scattering potential
+    # print("Calculating scattering potential for all atoms")
+    # final_volume = torch.zeros(
+    #     upsampled_shape, dtype=torch.float32, device=device
+    # )
+    # final_volume = process_atoms_single_thread(
+    #     atom_indices=atom_indices,
+    #     atom_dds=atom_dds,
+    #     bPlusB=total_b_param,
+    #     scattering_params_a=total_a_param,
+    #     voxel_offsets_flat=voxel_offsets_flat,
+    #     upsampled_shape=upsampled_shape,
+    #     upsampled_pixel_size=upsampled_pixel_size,
+    #     lead_term=lead_term,
+    #     device=device,
+    # )
+
+    ############################################
+    ### Additional post-simulation filtering ###
+    ############################################
 
     # Convert to Fourier space for filtering
 

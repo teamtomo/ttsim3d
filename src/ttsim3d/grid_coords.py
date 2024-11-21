@@ -89,8 +89,10 @@ def get_size_neighborhood_cistem(
 def get_voxel_neighborhood_offsets(
     mean_b_factor: float, upsampled_pixel_size: float
 ) -> torch.Tensor:
-    """
-    Calculate the offsets of the voxel neighborhood.
+    """Offset arrays for the voxel neighborhood.
+
+    Calculate the offsets of the voxel neighborhood. Returned as a flat tensor
+    with shape (n^3, 3) where n is the size of the neighborhood in one dimension.
 
     Args:
         mean_b_factor: The mean B factor of the atoms.
@@ -99,6 +101,7 @@ def get_voxel_neighborhood_offsets(
     Returns
     -------
         torch.Tensor: The offsets of the voxel neighborhood.
+
     """
     # Get the size of the voxel neighbourhood to calculate the potential of each atom
     size_neighborhood = get_size_neighborhood_cistem(
