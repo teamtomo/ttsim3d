@@ -27,21 +27,32 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "License :: OSI Approved :: BSD License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
     "Typing :: Typed",
 ]
 # add your package dependencies here
-dependencies = []
+# "torch_fourier_filter",  # NOTE: This needs published on PyPI; install manually from local
+dependencies = [
+    "torch",
+    "einops",
+    "torch_grid_utils",
+    "starfile",
+    "scipy",
+    "mrcfile",
+    "mmdf",
+    "torch_fourier_filter @ git+https://git@github.com/jdickerson95/torch-fourier-filter.git#main"
+]
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 # https://peps.python.org/pep-0621/#dependencies-optional-dependencies
 # "extras" (e.g. for `pip install .[test]`)
 [project.optional-dependencies]
 # add dependencies used for testing here
-test = ["pytest", "pytest-cov"]
+test = ["pytest", "pytest-cov", "requests"]
 # add anything else you like to have in your dev environment here
 dev = [
     "ipython",
