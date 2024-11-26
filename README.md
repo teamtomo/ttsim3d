@@ -7,3 +7,17 @@
 [![codecov](https://codecov.io/gh/jdickerson95/ttsim3d/branch/main/graph/badge.svg)](https://codecov.io/gh/jdickerson95/ttsim3d)
 
 Simulate a 3D electrostatic potential map from a PDB in pyTorch
+
+Install via source using
+```zsh
+pip install -e .
+```
+And for development and testing use
+```zsh
+pip install -e ".[dev,test]"
+```
+
+To run, adjust the input parameters in the file run_ttsim3d.py and run using
+```zsh
+python run_ttsim3d.py
+```
