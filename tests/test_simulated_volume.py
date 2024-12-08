@@ -56,6 +56,7 @@ def download_file(url: str, dest_folder: str) -> str:
     file_path = os.path.join(dest_folder, filename)
 
     response = requests.get(url, stream=True)
+    response.raise_for_status()  # Raise an error for bad status codes
     # total_size = int(response.headers.get("content-length", 0))
     block_size = 1024  # 1 Kibibyte
 
@@ -63,16 +64,19 @@ def download_file(url: str, dest_folder: str) -> str:
         for data in response.iter_content(block_size):
             file.write(data)
 
+    print(f"Downloaded {file_path}")
     return file_path
 
 
 def setup_simulation():
     """Download necessary files and setup temporary directory."""
-    temp_dir = "tmp"
+    print(this_path)
+    print(this_dir)
+    print(tmp_dir)
 
-    pdb_filepath = download_file(PDB_STRUCTURE_FILEPATH, temp_dir)
-    mrc_filepath = download_file(SIMULATED_MRC_FILEPATH, temp_dir)
-    dqe_filepath = download_file(DQE_STARFILE_FILEPATH, temp_dir)
+    pdb_filepath = download_file(PDB_STRUCTURE_FILEPATH, tmp_dir)
+    mrc_filepath = download_file(SIMULATED_MRC_FILEPATH, tmp_dir)
+    dqe_filepath = download_file(DQE_STARFILE_FILEPATH, tmp_dir)
 
     return pdb_filepath, mrc_filepath, dqe_filepath
 
@@ -80,6 +84,11 @@ def setup_simulation():
 def test_simulate3d():
     """Do the simulation and compare to the reference mrc file."""
     pdb_filepath, mrc_filepath, dqe_filepath = setup_simulation()
+
+    # Ensure files are downloaded
+    assert os.path.exists(pdb_filepath), f"File not found: {pdb_filepath}"
+    assert os.path.exists(mrc_filepath), f"File not found: {mrc_filepath}"
+    assert os.path.exists(dqe_filepath), f"File not found: {dqe_filepath}"
 
     # Run the simulation
     simulate3d.simulate3d(**SIMULATION_PARAMS)

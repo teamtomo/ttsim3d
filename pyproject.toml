@@ -42,6 +42,7 @@ dependencies = [
     "scipy",
     "mrcfile",
     "mmdf",
+    "requests",
     "torch_fourier_filter @ git+https://git@github.com/jdickerson95/torch-fourier-filter.git#main"
 ]
 
