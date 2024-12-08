@@ -33,17 +33,16 @@ classifiers = [
     "Typing :: Typed",
 ]
 # add your package dependencies here
-# "torch_fourier_filter",  # NOTE: This needs published on PyPI; install manually from local
 dependencies = [
     "torch",
     "einops",
-    "torch_grid_utils",
+    "torch-grid-utils",
     "starfile",
     "scipy",
     "mrcfile",
     "mmdf",
     "requests",
-    "torch_fourier_filter @ git+https://git@github.com/jdickerson95/torch-fourier-filter.git#main"
+    "torch-fourier-filter"
 ]
 
 [tool.hatch.metadata]
