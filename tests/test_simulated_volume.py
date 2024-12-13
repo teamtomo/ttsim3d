@@ -63,6 +63,9 @@ def download_file(url: str, dest_folder: str) -> str:
     with open(file_path, "wb") as file:
         for data in response.iter_content(block_size):
             file.write(data)
+            # Print progress for every 1 MB
+            if i % (1024 // block_size) == 0:
+                print(f"Downloaded {i * block_size // 1024} MB of {total_size // 1024} MB")
 
     print(f"Downloaded {file_path}")
     return file_path
