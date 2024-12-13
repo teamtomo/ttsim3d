@@ -59,7 +59,7 @@ jobs:
         run: |
           echo "Testing network speed and connectivity"
           curl -L -o /dev/null -s -w "Download speed: %{speed_download} bytes/sec\n" "https://zenodo.org"
-          ping -c 4 zenodo.org
+          curl -I "https://zenodo.org"  # Fetch HTTP headers to test connectivity
 
       - name: Install Dependencies
         run: |
