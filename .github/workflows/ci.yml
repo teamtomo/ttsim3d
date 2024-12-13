@@ -46,6 +46,21 @@ jobs:
           cache-dependency-path: "pyproject.toml"
           cache: "pip"
 
+      - name: Cache Downloaded Files
+        uses: actions/cache@v3
+        with:
+          path: tmp/
+          key: ${{ runner.os }}-download-cache-${{ hashFiles('tests/*.py') }}
+          restore-keys: |
+            ${{ runner.os }}-download-cache-
+
+      - name: Debug Ubuntu Runner
+        if: matrix.platform == 'ubuntu-latest'
+        run: |
+          echo "Testing network speed and connectivity"
+          curl -L -o /dev/null -s -w "Download speed: %{speed_download} bytes/sec\n" "https://zenodo.org"
+          ping -c 4 zenodo.org
+
       - name: Install Dependencies
         run: |
           python -m pip install -U pip

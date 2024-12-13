@@ -5,6 +5,7 @@ fail and the reference "good" simulated structure will need to be updated.
 """
 
 import os
+import time
 from pathlib import Path
 
 import mrcfile
@@ -47,28 +48,43 @@ SIMULATION_PARAMS = {
 }
 
 
-def download_file(url: str, dest_folder: str) -> str:
-    """Download a file from a URL to a destination folder."""
+def download_file(url: str, dest_folder: str, retries: int = 3, delay: int = 5) -> str:
+    """Download a file with retry support."""
     if not os.path.exists(dest_folder):
         os.makedirs(dest_folder)
 
     filename = url.split("/")[-1].split("?")[0]
     file_path = os.path.join(dest_folder, filename)
 
-    response = requests.get(url, stream=True)
-    response.raise_for_status()  # Raise an error for bad status codes
-    total_size = int(response.headers.get("content-length", 0))
-    block_size = 1024  # 1 Kibibyte
+    for attempt in range(retries):
+        try:
+            response = requests.get(
+                url, stream=True, timeout=60
+            )  # Set timeout per request
+            response.raise_for_status()
+            total_size = int(response.headers.get("content-length", 0))
+            block_size = 1024
 
-    with open(file_path, "wb") as file:
-        for i, data in enumerate(response.iter_content(block_size)):
-            file.write(data)
-            # Print progress for every 1 MB
-            if i % (1024 // block_size) == 0:
-                print(f"Downloaded {i * block_size // 1024} MB of {total_size // 1024} MB")
+            with open(file_path, "wb") as file:
+                for i, data in enumerate(response.iter_content(block_size)):
+                    file.write(data)
+                    if i % (1024 // block_size) == 0:
+                        print(
+                            f"Downloaded {i * block_size // 1024} KB "
+                            f"of {total_size // 1024} KB"
+                        )
 
-    print(f"Downloaded {file_path}")
-    return file_path
+            print(f"Downloaded {file_path}")
+            return file_path
+        except (OSError, requests.exceptions.RequestException) as e:
+            print(f"Error downloading file: {e}")
+            if attempt < retries - 1:
+                print(
+                    f"Retrying in {delay} seconds... (Attempt {attempt + 2}/{retries})"
+                )
+                time.sleep(delay)
+            else:
+                raise
 
 
 def setup_simulation():
