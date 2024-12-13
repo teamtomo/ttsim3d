@@ -57,7 +57,7 @@ def download_file(url: str, dest_folder: str) -> str:
 
     response = requests.get(url, stream=True)
     response.raise_for_status()  # Raise an error for bad status codes
-    # total_size = int(response.headers.get("content-length", 0))
+    total_size = int(response.headers.get("content-length", 0))
     block_size = 1024  # 1 Kibibyte
 
     with open(file_path, "wb") as file:
