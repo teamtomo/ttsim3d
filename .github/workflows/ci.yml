@@ -38,6 +38,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Remove needrestart on Ubuntu
+        if: matrix.platform == 'ubuntu-latest'
+        run: |
+          echo "Removing needrestart to avoid service restart issues"
+          sudo apt-get autopurge -y needrestart
+
       - name: 🐍 Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
