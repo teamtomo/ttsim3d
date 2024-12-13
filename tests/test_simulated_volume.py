@@ -9,6 +9,7 @@ from pathlib import Path
 
 import mrcfile
 import numpy as np
+import pytest
 import requests
 
 from ttsim3d import simulate3d
@@ -81,6 +82,15 @@ def setup_simulation():
     return pdb_filepath, mrc_filepath, dqe_filepath
 
 
+def is_ci() -> bool:
+    """Check if running in CI environment."""
+    return os.environ.get("CI", "false").lower() == "true"
+
+
+@pytest.mark.skipif(
+    is_ci(),
+    reason="Skip on CI due to memory constraints. Run locally or on large runner only.",
+)
 def test_simulate3d():
     """Do the simulation and compare to the reference mrc file."""
     pdb_filepath, mrc_filepath, dqe_filepath = setup_simulation()
