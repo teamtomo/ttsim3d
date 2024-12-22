@@ -43,7 +43,8 @@ dependencies = [
     "pydantic",
     "mmdf",
     "requests",
-    "torch-fourier-filter"
+    "torch-fourier-filter",
+    "pydantic"
 ]
 
 [tool.hatch.metadata]
