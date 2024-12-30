@@ -1,13 +1,21 @@
 """Pydantic models for input parameters."""
 
 import os
-import torch
-from pydantic import BaseModel, validator, Field, ConfigDict
 from typing import Optional
 
+import torch
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from torch_fourier_filter.dose_weight import cumulative_dose_filter_3d
+from torch_fourier_filter.mtf import make_mtf_grid, read_mtf
+
+from ttsim3d.grid_coords import fourier_rescale_3d_force_size
 from ttsim3d.mrc_handler import tensor_to_mrc
 from ttsim3d.pdb_handler import load_model, remove_hydrogens
-
+from ttsim3d.simulate3d import (
+    _calculate_lead_term,
+    place_voxel_neighborhoods_in_volume,
+    simulate_atomwise_scattering_potentials,
+)
 
 ALLOWED_DOSE_FILTER_MODIFICATIONS = ["None", "sqrt", "rel_diff"]
 DEFAULT_MTF_REFERENCES = {
@@ -35,8 +43,8 @@ class SimulatorConfig(BaseModel):
     handful also included for storing intermediate results during the
     calculation.
 
-    Attributes:
-    -----------
+    Attributes
+    ----------
     voltage: float
         The voltage of the microscope in kV. Default is 300 kV.
     apply_dose_weighting: bool
@@ -83,8 +91,8 @@ class SimulatorConfig(BaseModel):
         simulation filters are applied under the attribute `Simulator.volume`.
         Default is True.
 
-    Methods:
-    --------
+    Methods
+    -------
     model_dump -> dict
     """
 
@@ -105,8 +113,9 @@ class SimulatorConfig(BaseModel):
     store_upsampled_volume_rfft: bool = False
     store_volume: bool = True
 
-    @validator("crit_exposure_bfactor")
+    @field_validator("crit_exposure_bfactor")  # type: ignore
     def validate_crit_exposure_bfactor(cls, v):
+        """Validate model input `crit_exposure_bfactor`."""
         if not isinstance(v, (float, int)):
             e = f"Invalid critical exposure B-factor of type: {v}."
             e += "Expected a float or integer."
@@ -114,21 +123,23 @@ class SimulatorConfig(BaseModel):
 
         return v
 
-    @validator("dose_filter_modify_signal")
+    @field_validator("dose_filter_modify_signal")  # type: ignore
     def validate_dose_filter_modify_signal(cls, v):
+        """Validate model input `dose_filter_modify_signal`."""
         if v not in ALLOWED_DOSE_FILTER_MODIFICATIONS:
             e = f"Invalid dose filter signal modification: {v}."
             e += f"Allowed values are: {ALLOWED_DOSE_FILTER_MODIFICATIONS}"
             raise ValueError(e)
         return v
 
-    @validator("mtf_reference")
+    @field_validator("mtf_reference")  # type: ignore
     def validate_mtf_reference(cls, v):
+        """Validate model input `mtf_reference`."""
         _path_exists = os.path.exists(v)
-        _is_default = v in DEFAULT_MTF_REFERENCES.keys()
+        _is_default = v in DEFAULT_MTF_REFERENCES
 
         if not _path_exists and not _is_default:
-            e = f"Invalid MTF reference file: {v}."
+            e = f"Invalid MTF reference file: {v}. "
             e += "Please provide a valid path to an MTF reference file."
             raise ValueError(e)
 
@@ -137,15 +148,16 @@ class SimulatorConfig(BaseModel):
 
         return v
 
-    def model_dump(self):
-        return self.dict()
+    # def model_dump(self) -> dict:
+    #     """Return the model as a dictionary."""
+    #     return self.dict()
 
 
 class Simulator(BaseModel):
     """Class for simulating a 3D volume from a atomistic structure.
-    
-    Attributes:
-    -----------
+
+    Attributes
+    ----------
     pixel_spacing: float
         The pixel spacing of the simulated volume in units of Angstroms. Must
         be greater than 0, and defaults to 1.0 Angstroms.
@@ -203,9 +215,9 @@ class Simulator(BaseModel):
         The simulated volume in real space after requested simulation filters
         are applied. Non-serializable attribute. Only stored if requested in
         the SimulatorConfig.
-        
-    Methods:
-    --------
+
+    Methods
+    -------
     __init__ -> None
     load_atoms_from_pdb_model -> None
         Loads the structure atoms from the held pdb file into the attributes
@@ -237,27 +249,21 @@ class Simulator(BaseModel):
     upsampled_shape: Optional[tuple[int, int, int]] = Field(None, exclude=True)
     upsampled_pixel_size: Optional[float] = Field(None, exclude=True)
     actual_upsampling: Optional[int] = Field(None, exclude=True)
-    neighborhood_atom_potentials: Optional[torch.Tensor] = Field(
-        None, exclude=True
-    )
-    neighborhood_atom_positions: Optional[torch.Tensor] = Field(
-        None, exclude=True
-    )
+    neighborhood_atom_potentials: Optional[torch.Tensor] = Field(None, exclude=True)
+    neighborhood_atom_positions: Optional[torch.Tensor] = Field(None, exclude=True)
     dose_filter: Optional[torch.Tensor] = Field(None, exclude=True)
     dqe_filter: Optional[torch.Tensor] = Field(None, exclude=True)
     upsampled_volume_rfft: Optional[torch.Tensor] = Field(None, exclude=True)
     volume: Optional[torch.Tensor] = Field(None, exclude=True)
 
-    def __init__(self, **data):
-        super().__init__(**data)
+    def __init__(self) -> None:
+        super().__init__()
 
         self.load_atoms_from_pdb_model()
 
-    def load_atoms_from_pdb_model(self):
+    def load_atoms_from_pdb_model(self) -> None:
         """Loads the structure atoms from held pdb file."""
-        atom_positions_zyx, atom_ids, atom_b_factors = load_model(
-            self.pdb_filepath
-        )
+        atom_positions_zyx, atom_ids, atom_b_factors = load_model(self.pdb_filepath)
         atom_positions_zyx, atom_ids, atom_b_factors = remove_hydrogens(
             atom_positions_zyx, atom_ids, atom_b_factors
         )
@@ -269,15 +275,18 @@ class Simulator(BaseModel):
     def get_scale_atom_b_factors(self) -> torch.Tensor:
         """Returns b-factors transformed by the scale and additional b-factor.
 
-        Parameters:
-        -----------
+        Parameters
+        ----------
         None
 
-        Returns:
-        --------
+        Returns
+        -------
         b_fac: torch.Tensor
             The scaled b-factors.
         """
+        if self.atom_b_factors is None:
+            raise ValueError("No atom B-factors loaded.")
+
         b_fac = self.atom_b_factors * self.b_factor_scaling
         b_fac += self.additional_b_factor
 
@@ -289,13 +298,13 @@ class Simulator(BaseModel):
 
     def run(
         self,
-        gpu_ids: int | list[int] = None,
-        atom_indices: torch.Tensor = None,
+        gpu_ids: Optional[int | list[int]] = None,
+        atom_indices: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Runs the simulation and returns the simulated volume.
 
-        Parameters:
-        -----------
+        Parameters
+        ----------
         gpu_ids: int | list[int]
             A list of GPU IDs to use for the simulation. The default is 'None'
             which will use the CPU. A value of '-1' will use all available
@@ -305,12 +314,15 @@ class Simulator(BaseModel):
             The indices of the atoms to simulate. The default is 'None' which
             will simulate all atoms in the structure.
 
-        Returns:
-        --------
+        Returns
+        -------
         volume: torch.Tensor
             The simulated volume.
         """
-        if atom_indices is not None:
+        assert self.atom_positions_zyx is not None, "No atom positions loaded."
+        assert self.atom_identities is not None, "No atom identities loaded."
+
+        if atom_indices is None:
             atom_indices = torch.arange(self.atom_identities.size(0))
 
         # 1. Select GPUs to use, or use CPU
@@ -331,7 +343,7 @@ class Simulator(BaseModel):
             sim_pixel_spacing=self.pixel_spacing,
             sim_volume_shape=self.volume_shape,
             lead_term=lead_term,
-            upsampling=upsampling,
+            upsampling=self.simulator_config.upsampling,  # requested upsampling
         )
 
         neighborhood_potentials = scattering_results["neighborhood_potentials"]
@@ -350,7 +362,7 @@ class Simulator(BaseModel):
 
         # 4. Place the potentials into the upsampled volume
         upsampled_volume = torch.zeros(upsampled_shape, dtype=torch.float32)
-        upsampled_volume = place_potentials_in_volume(
+        upsampled_volume = place_voxel_neighborhoods_in_volume(
             neighborhood_potentials=neighborhood_potentials,
             voxel_positions=voxel_positions,
             final_volume=upsampled_volume,
@@ -360,7 +372,7 @@ class Simulator(BaseModel):
         if self.simulator_config.apply_dose_weighting:
             crit_exp_bf = self.simulator_config.crit_exposure_bfactor
             dose_filter = cumulative_dose_filter_3d(
-                volume_shape=self.upsampled_shape,
+                volume_shape=upsampled_shape,
                 pixel_size=self.upsampled_pixel_size,
                 start_exposure=self.dose_start,
                 end_exposure=self.dose_end,
@@ -402,9 +414,7 @@ class Simulator(BaseModel):
                 self.dqe_filter = dqe_filter
 
         # 7. Apply the simulation filters
-        upsampled_volume_rfft = torch.fft.rfftn(
-            upsampled_volume, dim=(-3, -2, -1)
-        )
+        upsampled_volume_rfft = torch.fft.rfftn(upsampled_volume, dim=(-3, -2, -1))
 
         if self.simulator_config.store_upsampled_volume_rfft:
             self.upsampled_volume_rfft = upsampled_volume_rfft
@@ -413,8 +423,8 @@ class Simulator(BaseModel):
             upsampled_volume_rfft *= dose_filter
 
         volume_rfft = fourier_rescale_3d_force_size(
-            volume_rfft=upsampled_volume_rfft,
-            volume_shape=self.upsampled_shape,
+            volume_fft=upsampled_volume_rfft,
+            volume_shape=upsampled_shape,
             target_size=self.volume_shape[0],  # TODO: pass as tuple
             rfft=True,
             fftshift=False,
@@ -423,31 +433,42 @@ class Simulator(BaseModel):
         if self.simulator_config.apply_dqe:
             volume_rfft *= dqe_filter
 
-        volume = torch.fft.irfftn(
-            volume_rfft, dim=(-3, -2, -1), s=volume_shape
-        )
+        volume = torch.fft.irfftn(volume_rfft, dim=(-3, -2, -1), s=self.volume_shape)
         volume = torch.fft.ifftshift(volume, dim=(-3, -2, -1))
 
         return volume
 
-    def export_to_mrc(self, mrc_filepath: str | os.PathLike, **kwargs) -> None:
+    def export_to_mrc(
+        self,
+        mrc_filepath: str | os.PathLike,
+        gpu_ids: Optional[int | list[int]] = None,
+        atom_indices: Optional[torch.Tensor] = None,
+    ) -> None:
         """Exports the simulated volume to an MRC file.
 
-        Parameters:
-        -----------
+        Parameters
+        ----------
         mrc_filepath: str | os.PathLike
             The file path to save the MRC file.
-        kwargs: dict
-            Additional keyword arguments passed to the run method.
+        gpu_ids: int | list[int]
+            A list of GPU IDs to use for the simulation. The default is 'None'
+            which will use the CPU. A value of '-1' will use all available
+            GPUs, otherwise a list of integers greater than or equal to 0 are
+            expected. The default is 'None'. This is passed to the `run`
+            method.
+        atom_indices: torch.Tensor
+            The indices of the atoms to simulate. The default is 'None' which
+            will simulate all atoms in the structure. This is passed to the
+            `run` method.
 
-        Returns:
-        --------
+        Returns
+        -------
         None
         """
-        volume = self.run(**kwargs)
+        volume = self.run(gpu_ids=gpu_ids, atom_indices=atom_indices)
 
         tensor_to_mrc(
-            output_filename=mrc_filepath,
+            output_filename=str(mrc_filepath),
             final_volume=volume,
             sim_pixel_spacing=self.pixel_spacing,
         )
