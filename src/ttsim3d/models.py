@@ -1,10 +1,12 @@
 """Pydantic models for input parameters."""
 
 import os
-from typing import Optional
+import pathlib
+from typing import Annotated, Any, Literal, Optional
 
 import torch
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic.json_schema import SkipJsonSchema
 from torch_fourier_filter.dose_weight import cumulative_dose_filter_3d
 from torch_fourier_filter.mtf import make_mtf_grid, read_mtf
 
@@ -32,6 +34,11 @@ DEFAULT_MTF_REFERENCES = {
     "k3_300kV_FL2": "src/data/mtf_standard_k3_300kV_FL2.star",
 }
 
+# Pydantic type annotation for large tensor excluded from JSON schema and dump
+ExcludedTensor = SkipJsonSchema[
+    Annotated[torch.Tensor, Field(default=None, exclude=True)]
+]
+
 
 class SimulatorConfig(BaseModel):
     """Configuration for simulating a 3D volume.
@@ -45,48 +52,48 @@ class SimulatorConfig(BaseModel):
 
     Attributes
     ----------
-    voltage: float
+    voltage : float
         The voltage of the microscope in kV. Default is 300 kV.
-    apply_dose_weighting: bool
+    apply_dose_weighting : bool
         If True, apply dose weighting to the simulation.
-    crit_exposure_bfactor: float | int
+    crit_exposure_bfactor : float
         B-factor to use in critical exposure calculations. The default is -1
         and corresponds to the fitted critical exposure function in Grant and
         Grigorieff, 2015.
-    dose_filter_modify_signal: str
+    dose_filter_modify_signal : Literal["None", "sqrt", "rel_diff"]
         Signal modification to apply to the dose filter. Currently supports
         - 'None': No modification
         - 'sqrt': x' = sqrt(x)
         - 'rel_diff': x' = 1 - (1 - x) / (1 - x)
-    dose_start: float
+    dose_start : float
         The starting dose in e/A^2. The default is 0.0 e/A^2.
-    dose_end: float
+    dose_end : float
         The ending dose in e/A^2. The default is 30.0 e/A^2.
-    apply_dqe: bool
+    apply_dqe : bool
         If True, apply a DQE filter to the simulation.
-    mtf_reference: str
+    mtf_reference : str
         Path to the modulation transfer function (MTF) reference star file, or
         one of the known MTF reference files in:
         - 'k2_300kV': The MTF reference for a K2 camera at 300 kV.
-    upsampling: int
+    upsampling : int
         The upsampling factor to apply to the simulation. The default is -1 and
         corresponds to automatic calculation of the upsampling factor.
-    store_dose_filter: bool
+    store_dose_filter : bool
         If True, store the dose filter in the simulator class under the
         attribute `Simulator.dose_filter`. Default is False.
-    store_dqe_filter: bool
+    store_dqe_filter : bool
         If True, store the DQE filter in the simulator class under the
         attribute `Simulator.dqe_filter`. Default is False.
-    store_neighborhood_atom_potentials: bool
+    store_neighborhood_atom_potentials : bool
         If True, store the calculated potentials around each of the atoms
         under the attribute `Simulator.neighborhood_atom_potentials` with the
         associated positions in the 3D volume under
         `Simulator.neighborhood_atom_positions`. Default is False.
-    store_upsampled_volume_rfft: bool
+    store_upsampled_volume_rfft : bool
         If True, store the real fast Fourier transform (rfft) of the upsampled
         volume before any filters are applied under the attribute
         `Simulator.upsampled_volume_rfft`. Default is False.
-    store_volume: bool
+    store_volume : bool
         If True, store the final simulated volume in real space after requested
         simulation filters are applied under the attribute `Simulator.volume`.
         Default is True.
@@ -97,21 +104,23 @@ class SimulatorConfig(BaseModel):
     """
 
     # Serializable attributes
-    voltage: float = Field(300.0, ge=0.0)
-    apply_dose_weighting: bool = True
-    crit_exposure_bfactor: float | int = -1
-    dose_filter_modify_signal: str = "None"
-    dose_start: float = Field(0.0, ge=0.0)
-    dose_end: float = Field(30.0, ge=0.0)
-    apply_dqe: bool = True
-    mtf_reference: str = "k2_300kV"
-    upsampling: int = -1
+    voltage: Annotated[float, Field(ge=0.0)] = 300.0
+    apply_dose_weighting: Annotated[bool, Field(default=True)] = True
+    crit_exposure_bfactor: Annotated[float, Field(default=-1)] = -1
+    dose_filter_modify_signal: Annotated[
+        Literal["None", "sqrt", "rel_diff"], Field(default="None")
+    ] = "None"
+    dose_start: Annotated[float, Field(ge=0.0)] = 0.0
+    dose_end: Annotated[float, Field(ge=0.0)] = 30.0
+    apply_dqe: Annotated[bool, Field(default=True)] = True
+    mtf_reference: Annotated[str, Field(default="k2_300kV")] = "k2_300kV"
+    upsampling: Annotated[int, Field(default=-1)] = -1
 
-    store_dose_filter: bool = True
-    store_dqe_filter: bool = True
-    store_neighborhood_atom_potentials: bool = False
-    store_upsampled_volume_rfft: bool = False
-    store_volume: bool = True
+    store_dose_filter: Annotated[bool, Field(default=True)] = True
+    store_dqe_filter: Annotated[bool, Field(default=True)] = True
+    store_neighborhood_atom_potentials: Annotated[bool, Field(default=True)] = False
+    store_upsampled_volume_rfft: Annotated[bool, Field(default=True)] = False
+    store_volume: Annotated[bool, Field(default=True)] = True
 
     @field_validator("crit_exposure_bfactor")  # type: ignore
     def validate_crit_exposure_bfactor(cls, v):
@@ -158,44 +167,44 @@ class Simulator(BaseModel):
 
     Attributes
     ----------
-    pixel_spacing: float
+    pixel_spacing : float
         The pixel spacing of the simulated volume in units of Angstroms. Must
         be greater than 0, and defaults to 1.0 Angstroms.
-    volume_shape: tuple[int, int, int]
+    volume_shape : tuple[int, int, int]
         The shape of the simulated volume in pixels. The default is
         (400, 400, 400).
-    pdb_filepath: str
+    pdb_filepath : pathlib.Path
         The path to the PDB file containing the atomic structure to simulate.
-    b_factor_scaling: float
+    b_factor_scaling : float
         The scaling factor to apply to the B-factors of the atoms in the pdb
         file. The default is 1.0.
-    additional_b_factor: float
+    additional_b_factor : float
         Additional B-factor to apply to the atoms in the pdb file. The default
         is 0.0.
-    simulator_config: SimulatorConfig
+    simulator_config : SimulatorConfig
         Simulation configuration.
-    atom_positions_zyx: torch.Tensor
+    atom_positions_zyx : torch.Tensor
         The positions (float tensor) of the atoms in the structure in units of
         Angstroms. Non-serializable attribute.
-    atom_identities: torch.Tensor
+    atom_identities : torch.Tensor
         The atomic identities (str tensor) of the atoms in the structure.
         Non-serializable attribute.
-    atom_b_factors: torch.Tensor
+    atom_b_factors : torch.Tensor
         The B-factors (float tensor) of the atoms in the structure in units of
         A^2. Non-serializable attribute.
-    upsampled_shape: tuple[int, int, int]
+    upsampled_shape : tuple[int, int, int]
         The shape of the upsampled volume. Non-serializable attribute.
-    upsampled_pixel_size: float
+    upsampled_pixel_size : float
         The pixel size of the upsampled volume in units of Angstroms.
         Non-serializable attribute.
-    actual_upsampling: int
+    actual_upsampling : int
         The actual upsampling factor applied to the simulation.
         Non-serializable attribute.
-    neighborhood_atom_potentials: torch.Tensor
+    neighborhood_atom_potentials : torch.Tensor
         The calculated potentials around each atom in the structure.
         Non-serializable attribute. Only stored if requested in the
         SimulatorConfig.
-    neighborhood_atom_positions: torch.Tensor
+    neighborhood_atom_positions : torch.Tensor
         The voxel positions of the calculated potentials around each atom in
         the structure. Non-serializable attribute. Only stored if requested in
         the SimulatorConfig.
@@ -203,15 +212,15 @@ class Simulator(BaseModel):
         The dose filter applied to the simulation. Non-serializable attribute.
         Only stored if `SimulatorConfig.apply_dose_weighting` is True and
         storage requested in the SimulatorConfig.
-    dqe_filter: torch.Tensor
+    dqe_filter : torch.Tensor
         The DQE filter applied to the simulation. Non-serializable attribute.
         Only stored if `SimulatorConfig.apply_dqe` is True and storage
         requested in the SimulatorConfig.
-    upsampled_volume_rfft: torch.Tensor
+    upsampled_volume_rfft : torch.Tensor
         The real fast Fourier transform of the upsampled volume before any
         filters are applied. Non-serializable attribute. Only stored if
         requested in the SimulatorConfig.
-    volume: torch.Tensor
+    volume : torch.Tensor
         The simulated volume in real space after requested simulation filters
         are applied. Non-serializable attribute. Only stored if requested in
         the SimulatorConfig.
@@ -235,29 +244,33 @@ class Simulator(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     # Serializable attributes
-    pixel_spacing: float = Field(1.0, ge=0.0)
-    volume_shape: tuple[int, int, int]
-    pdb_filepath: str
-    b_factor_scaling: float = 1.0
-    additional_b_factor: float = 0.0
+    pixel_spacing: Annotated[float, Field(ge=0.0)] = 1.0
+    volume_shape: Annotated[tuple[int, int, int], Field(default=(400, 400, 400))] = (
+        400,
+        400,
+        400,
+    )
+    pdb_filepath: Annotated[pathlib.Path, Field(...)]
+    b_factor_scaling: Annotated[float, Field(default=1.0)] = 1.0
+    additional_b_factor: Annotated[float, Field(default=0.0)] = 0.0
     simulator_config: SimulatorConfig
 
-    # Non-serializable attributes
-    atom_positions_zyx: Optional[torch.Tensor] = Field(None, exclude=True)
-    atom_identities: Optional[torch.Tensor] = Field(None, exclude=True)
-    atom_b_factors: Optional[torch.Tensor] = Field(None, exclude=True)
-    upsampled_shape: Optional[tuple[int, int, int]] = Field(None, exclude=True)
-    upsampled_pixel_size: Optional[float] = Field(None, exclude=True)
-    actual_upsampling: Optional[int] = Field(None, exclude=True)
-    neighborhood_atom_potentials: Optional[torch.Tensor] = Field(None, exclude=True)
-    neighborhood_atom_positions: Optional[torch.Tensor] = Field(None, exclude=True)
-    dose_filter: Optional[torch.Tensor] = Field(None, exclude=True)
-    dqe_filter: Optional[torch.Tensor] = Field(None, exclude=True)
-    upsampled_volume_rfft: Optional[torch.Tensor] = Field(None, exclude=True)
-    volume: Optional[torch.Tensor] = Field(None, exclude=True)
+    # Non-serializable and schema-excluded attributes
+    atom_positions_zyx: ExcludedTensor
+    atom_identities: ExcludedTensor
+    atom_b_factors: ExcludedTensor
+    upsampled_shape: ExcludedTensor
+    upsampled_pixel_size: ExcludedTensor
+    actual_upsampling: ExcludedTensor
+    neighborhood_atom_potentials: ExcludedTensor
+    neighborhood_atom_positions: ExcludedTensor
+    dose_filter: ExcludedTensor
+    dqe_filter: ExcludedTensor
+    upsampled_volume_rfft: ExcludedTensor
+    volume: ExcludedTensor
 
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(self, **data: Any) -> None:
+        super().__init__(**data)
 
         self.load_atoms_from_pdb_model()
 
@@ -374,16 +387,16 @@ class Simulator(BaseModel):
             dose_filter = cumulative_dose_filter_3d(
                 volume_shape=upsampled_shape,
                 pixel_size=self.upsampled_pixel_size,
-                start_exposure=self.dose_start,
-                end_exposure=self.dose_end,
+                start_exposure=self.simulator_config.dose_start,
+                end_exposure=self.simulator_config.dose_end,
                 crit_exposure_bfactor=crit_exp_bf,
                 rfft=True,
                 fftshift=False,
             )
 
-            if self.simulator_config.modify_signal == "sqrt":
+            if self.simulator_config.dose_filter_modify_signal == "sqrt":
                 dose_filter = torch.sqrt(dose_filter)
-            elif self.simulator_config.modify_signal == "rel_diff":
+            elif self.simulator_config.dose_filter_modify_signal == "rel_diff":
                 eps = 1e-10
                 denominator = torch.clamp(1 + dose_filter, min=eps)
                 tmp = 1 - (1 - dose_filter) / denominator

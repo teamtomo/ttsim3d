@@ -44,7 +44,8 @@ dependencies = [
     "mmdf",
     "requests",
     "torch-fourier-filter",
-    "pydantic"
+    "pydantic",
+    "pydanclick"
 ]
 
 [tool.hatch.metadata]
