@@ -73,8 +73,8 @@ repository = "https://github.com/jdickerson95/ttsim3d"
 # Entry points
 # https://peps.python.org/pep-0621/#entry-points
 # same as console_scripts entry point
-# [project.scripts]
-# ttsim3d-cli = "ttsim3d:main_cli"
+[project.scripts]
+ttsim3d-cli = "programs.ttsim3d:main"
 
 # [project.entry-points."some.group"]
 # tomatoes = "ttsim3d:main_tomatoes"
