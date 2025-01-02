@@ -6,7 +6,6 @@ from pydanclick import from_pydantic
 from ttsim3d.models import Simulator
 
 
-# TODO: Remove simulator-config prefixes in arguments
 # TODO: Add brief description for each argument in the help message
 # TODO: Test the script for input validation
 @click.command()

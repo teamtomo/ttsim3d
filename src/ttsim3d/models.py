@@ -7,19 +7,12 @@ from typing import Annotated, Any, Literal, Optional
 import torch
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic.json_schema import SkipJsonSchema
-from torch_fourier_filter.dose_weight import cumulative_dose_filter_3d
-from torch_fourier_filter.mtf import make_mtf_grid, read_mtf
+from torch_fourier_filter.mtf import read_mtf
 
-from ttsim3d.grid_coords import fourier_rescale_3d_force_size
 from ttsim3d.mrc_handler import tensor_to_mrc
 from ttsim3d.pdb_handler import load_model, remove_hydrogens
-from ttsim3d.simulate3d import (
-    _calculate_lead_term,
-    place_voxel_neighborhoods_in_volume,
-    simulate_atomwise_scattering_potentials,
-)
+from ttsim3d.simulate3d import ALLOWED_DOSE_FILTER_MODIFICATIONS, simulate3d
 
-ALLOWED_DOSE_FILTER_MODIFICATIONS = ["None", "sqrt", "rel_diff"]
 DEFAULT_MTF_REFERENCES = {
     "de20_300kv": "src/data/mtf_de20_300kV.star",
     "falcon2_300kv": "src/data/mtf_falcon2_300kV.star",
@@ -116,10 +109,10 @@ class SimulatorConfig(BaseModel):
     mtf_reference: Annotated[str, Field(default="k2_300kV")] = "k2_300kV"
     upsampling: Annotated[int, Field(default=-1)] = -1
 
-    store_dose_filter: Annotated[bool, Field(default=True)] = True
-    store_dqe_filter: Annotated[bool, Field(default=True)] = True
-    store_neighborhood_atom_potentials: Annotated[bool, Field(default=True)] = False
-    store_upsampled_volume_rfft: Annotated[bool, Field(default=True)] = False
+    # store_dose_filter: Annotated[bool, Field(default=True)] = True
+    # store_dqe_filter: Annotated[bool, Field(default=True)] = True
+    # store_neighborhood_atom_potentials: Annotated[bool, Field(default=True)] = False
+    # store_upsampled_volume_rfft: Annotated[bool, Field(default=True)] = False
     store_volume: Annotated[bool, Field(default=True)] = True
 
     @field_validator("crit_exposure_bfactor")  # type: ignore
@@ -156,6 +149,13 @@ class SimulatorConfig(BaseModel):
             return DEFAULT_MTF_REFERENCES[v]
 
         return v
+
+    @property
+    def mtf_tensors(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """Returns the MTF tensors from the reference file."""
+        frequencies, amplitudes = read_mtf(file_path=self.mtf_reference)
+
+        return frequencies, amplitudes
 
     # def model_dump(self) -> dict:
     #     """Return the model as a dictionary."""
@@ -338,116 +338,35 @@ class Simulator(BaseModel):
         if atom_indices is None:
             atom_indices = torch.arange(self.atom_identities.size(0))
 
-        # 1. Select GPUs to use, or use CPU
+        # Select GPUs to use, or use CPU
         # TODO: Implement GPU selection
 
-        # 2. Get the scaled atom b-factors
-        b_factors = self.get_scale_atom_b_factors()
+        # Get the scaled atom b-factors
+        atom_b_factors = self.get_scale_atom_b_factors()
 
-        # 3. Calculate the potentials around each atom
-        lead_term = _calculate_lead_term(
+        # Calculate the mtf_frequencies and mtf_amplitudes from reference file
+        mtf_frequencies, mtf_amplitudes = self.simulator_config.mtf_tensors
+
+        volume = simulate3d(
+            atom_positions_zyx=self.atom_positions_zyx,
+            atom_ids=self.atom_identities,
+            atom_b_factors=atom_b_factors,
             beam_energy_kev=self.simulator_config.voltage,
             sim_pixel_spacing=self.pixel_spacing,
-        )
-        scattering_results = simulate_atomwise_scattering_potentials(
-            atom_positions_zyx=self.atom_positions_zyx[atom_indices],
-            atom_ids=self.atom_identities[atom_indices],
-            atom_b_factors=b_factors[atom_indices],
-            sim_pixel_spacing=self.pixel_spacing,
             sim_volume_shape=self.volume_shape,
-            lead_term=lead_term,
-            upsampling=self.simulator_config.upsampling,  # requested upsampling
+            requested_upsampling=self.simulator_config.upsampling,
+            apply_dose_weighting=self.simulator_config.apply_dose_weighting,
+            dose_start=self.simulator_config.dose_start,
+            dose_end=self.simulator_config.dose_end,
+            dose_filter_modify_signal=self.simulator_config.dose_filter_modify_signal,
+            dose_filter_critical_bfactor=self.simulator_config.crit_exposure_bfactor,
+            apply_dqe=self.simulator_config.apply_dqe,
+            mtf_frequencies=mtf_frequencies,
+            mtf_amplitudes=mtf_amplitudes,
         )
 
-        neighborhood_potentials = scattering_results["neighborhood_potentials"]
-        voxel_positions = scattering_results["voxel_positions"]
-        upsampled_shape = scattering_results["upsampled_shape"]
-        upsampled_pixel_size = scattering_results["upsampled_pixel_size"]
-        upsampling = scattering_results["upsampling"]
-
-        self.upsampled_shape = upsampled_shape
-        self.upsampled_pixel_size = upsampled_pixel_size
-        self.actual_upsampling = upsampling
-
-        if self.simulator_config.store_neighborhood_atom_potentials:
-            self.neighborhood_atom_potentials = neighborhood_potentials
-            self.neighborhood_atom_positions = voxel_positions
-
-        # 4. Place the potentials into the upsampled volume
-        upsampled_volume = torch.zeros(upsampled_shape, dtype=torch.float32)
-        upsampled_volume = place_voxel_neighborhoods_in_volume(
-            neighborhood_potentials=neighborhood_potentials,
-            voxel_positions=voxel_positions,
-            final_volume=upsampled_volume,
-        )
-
-        # 5. Calculate the dose filter
-        if self.simulator_config.apply_dose_weighting:
-            crit_exp_bf = self.simulator_config.crit_exposure_bfactor
-            dose_filter = cumulative_dose_filter_3d(
-                volume_shape=upsampled_shape,
-                pixel_size=self.upsampled_pixel_size,
-                start_exposure=self.simulator_config.dose_start,
-                end_exposure=self.simulator_config.dose_end,
-                crit_exposure_bfactor=crit_exp_bf,
-                rfft=True,
-                fftshift=False,
-            )
-
-            if self.simulator_config.dose_filter_modify_signal == "sqrt":
-                dose_filter = torch.sqrt(dose_filter)
-            elif self.simulator_config.dose_filter_modify_signal == "rel_diff":
-                eps = 1e-10
-                denominator = torch.clamp(1 + dose_filter, min=eps)
-                tmp = 1 - (1 - dose_filter) / denominator
-
-                if torch.any(torch.isnan(tmp)):
-                    print("Warning: NaN values encountered in dose filter")
-                    tmp = torch.nan_to_num(tmp, nan=1.0)
-
-                dose_filter = tmp
-
-            if self.simulator_config.store_dose_filter:
-                self.dose_filter = dose_filter
-
-        # 6. Calculate the DQE filter
-        if self.simulator_config.apply_dqe:
-            mtf_frequencies, mtf_amplitudes = read_mtf(
-                file_path=self.simulator_config.mtf_reference
-            )
-            dqe_filter = make_mtf_grid(
-                image_shape=self.volume_shape,
-                mtf_frequencies=mtf_frequencies,  # 1D tensor
-                mtf_amplitudes=mtf_amplitudes,  # 1D tensor
-                rfft=True,
-                fftshift=False,
-            )
-
-            if self.simulator_config.store_dqe_filter:
-                self.dqe_filter = dqe_filter
-
-        # 7. Apply the simulation filters
-        upsampled_volume_rfft = torch.fft.rfftn(upsampled_volume, dim=(-3, -2, -1))
-
-        if self.simulator_config.store_upsampled_volume_rfft:
-            self.upsampled_volume_rfft = upsampled_volume_rfft
-
-        if self.simulator_config.apply_dose_weighting:
-            upsampled_volume_rfft *= dose_filter
-
-        volume_rfft = fourier_rescale_3d_force_size(
-            volume_fft=upsampled_volume_rfft,
-            volume_shape=upsampled_shape,
-            target_size=self.volume_shape[0],  # TODO: pass as tuple
-            rfft=True,
-            fftshift=False,
-        )
-
-        if self.simulator_config.apply_dqe:
-            volume_rfft *= dqe_filter
-
-        volume = torch.fft.irfftn(volume_rfft, dim=(-3, -2, -1), s=self.volume_shape)
-        volume = torch.fft.ifftshift(volume, dim=(-3, -2, -1))
+        if self.simulator_config.store_volume:
+            self.volume = volume
 
         return volume
 

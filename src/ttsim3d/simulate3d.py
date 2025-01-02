@@ -1,26 +1,20 @@
-"""The main simulation function."""
+"""Simulation of 3D volume and associated helper functions."""
 
-import time
-
-# from collections import namedtuple
-from typing import Optional
+from typing import Literal
 
 import einops
 import numpy as np
 import torch
 from torch_fourier_filter.ctf import calculate_relativistic_electron_wavelength
 from torch_fourier_filter.dose_weight import cumulative_dose_filter_3d
-from torch_fourier_filter.mtf import make_mtf_grid, read_mtf
+from torch_fourier_filter.mtf import make_mtf_grid
 
-from ttsim3d.device_handler import select_gpu
 from ttsim3d.grid_coords import (
     fourier_rescale_3d_force_size,
     get_atom_voxel_indices,
     get_upsampling,
     get_voxel_neighborhood_offsets,
 )
-from ttsim3d.mrc_handler import tensor_to_mrc
-from ttsim3d.pdb_handler import load_model, remove_hydrogens
 from ttsim3d.scattering_potential import (
     get_scattering_potential_of_voxel_batch,
 )
@@ -28,16 +22,79 @@ from ttsim3d.scattering_potential import (
 BOND_SCALING_FACTOR = 1.043
 PIXEL_OFFSET = 0.5
 MAX_SIZE = 1536
+ALLOWED_DOSE_FILTER_MODIFICATIONS = ["None", "sqrt", "rel_diff"]
 
 
 def _calculate_lead_term(beam_energy_kev: float, sim_pixel_spacing: float) -> float:
-    """Calculate the lead term for the scattering potential."""
+    """Calculate the lead term for the scattering potential.
+
+    Parameters
+    ----------
+    beam_energy_kev : float
+        The beam energy in keV.
+    sim_pixel_spacing : float
+        The pixel spacing for the final simulation in Angstroms.
+
+    Returns
+    -------
+    float
+        The lead term for the scattering potential.
+    """
     beam_energy_ev = beam_energy_kev * 1000
     wavelength_m = calculate_relativistic_electron_wavelength(beam_energy_ev)
     wavelength_A = wavelength_m * 1e10
     lead_term = BOND_SCALING_FACTOR * wavelength_A / 8.0 / (sim_pixel_spacing**2)
 
     return float(lead_term)
+
+
+def _validate_dose_filter_inputs(
+    dose_filter_modify_signal: str,
+    dose_filter_critical_bfactor: float,
+) -> None:
+    """Ensure dose filter inputs are valid."""
+    if dose_filter_modify_signal not in ALLOWED_DOSE_FILTER_MODIFICATIONS:
+        raise ValueError(
+            f"Invalid dose filter modification method: {dose_filter_modify_signal}. "
+            f"Allowed methods are: {ALLOWED_DOSE_FILTER_MODIFICATIONS}"
+        )
+
+    if dose_filter_critical_bfactor == -1:
+        return
+
+    if dose_filter_critical_bfactor < 0:
+        raise ValueError(
+            "Critical B factor for dose filter must either be -1 (use critical "
+            "exposure dose weighting) or a positive float. Given: "
+            f"{dose_filter_critical_bfactor}"
+        )
+
+
+def _validate_dqe_filter_inputs(
+    apply_dqe: bool,
+    mtf_frequencies: torch.Tensor,
+    mtf_amplitudes: torch.Tensor,
+) -> None:
+    """Ensure DQE filter inputs are valid."""
+    if apply_dqe:
+        if mtf_frequencies is None:
+            raise ValueError(
+                "If 'apply_dqe' is True, 'mtf_frequencies' must be provided. "
+                "Got 'None'."
+            )
+
+        if mtf_amplitudes is None:
+            raise ValueError(
+                "If 'apply_dqe' is True, 'mtf_amplitudes' must be provided. "
+                "Got 'None'."
+            )
+
+        if mtf_amplitudes.shape != mtf_frequencies.shape:
+            raise ValueError(
+                "The 'mtf_frequencies' and 'mtf_amplitudes' tensors must have "
+                "the same shape. Got shapes: "
+                f"{mtf_frequencies.shape} and {mtf_amplitudes.shape}."
+            )
 
 
 def _setup_sim3d_upsampling(
@@ -87,14 +144,15 @@ def _setup_upsampling_coords(
     Parameters
     ----------
     atom_positions_zyx : torch.Tensor
-        The atom coordinates in Angstroms. Shape (N, 3) where N is the number
-        of atoms.
+        The atom coordinates (continuous) in Angstroms. Shape (N, 3) where N is
+        the number of atoms.
     upsampled_pixel_size : float
         The pixel size in Angstroms for the upsampled volume.
     upsampled_shape : tuple[int, int, int]
         The shape of the upsampled volume.
     mean_b_factor : float
-        The mean B factor of the atoms.
+        The mean B factor of the atoms. Used to estimate the neighborhood size
+        necessary for simulation.
 
     Returns
     -------
@@ -151,7 +209,7 @@ def simulate_atomwise_scattering_potentials(
 
 
     """
-    upsampling, upsampled_pixel_size, upsampled_shape = _setup_sim3d_upsampling(
+    actual_upsampling, upsampled_pixel_size, upsampled_shape = _setup_sim3d_upsampling(
         sim_pixel_spacing=sim_pixel_spacing,
         sim_volume_shape=sim_volume_shape,
         upsampling=upsampling,
@@ -197,7 +255,7 @@ def simulate_atomwise_scattering_potentials(
         "voxel_positions": voxel_positions,
         "upsampled_shape": upsampled_shape,
         "upsampled_pixel_size": upsampled_pixel_size,
-        "upsampling": upsampling,
+        "actual_upsampling": actual_upsampling,
     }
 
 
@@ -238,60 +296,116 @@ def place_voxel_neighborhoods_in_volume(
     return final_volume
 
 
-def apply_simulation_filters(
-    upsampled_volume_rfft: torch.Tensor,
-    upsampled_shape: tuple[int, int, int],
-    final_shape: tuple[int, int, int],
-    upsampled_pixel_size: float,
-    upsampling: int,
-    dose_weighting: bool,
-    num_frames: int,
-    fluence_per_frame: float,
-    dose_B: float,
-    modify_signal: int,
-    apply_dqe: bool,
-    mtf_filename: str,
+def calculate_simulation_dose_filter_3d(
+    shape: tuple[int, int, int],
+    dose_start: float,
+    dose_end: float,
+    critical_bfactor: float,
+    modify_signal: Literal["None", "sqrt", "rel_diff"],
+    rfft: bool = True,
+    fftshift: bool = False,
 ) -> torch.Tensor:
-    """Apply filtering to to simulated volume.
-
-    This function does the following:
-    1. Apply dose weighting in the upsampled Fourier volume
-    2. Fourier crop back to the desired size (final_shape)
-    3. Apply DQE to the volume in Fourier space
+    """Helper function to calculate a cumulative dose filter for a simulation.
 
     Parameters
     ----------
-    upsampled_volume_rfft : torch.Tensor
-        RFFT of the upsampled volume.
-    upsampled_shape : tuple[int, int, int]
-        The shape of the full upsampled volume.
+    shape : tuple[int, int, int]
+        The requested return shape of the dose filter.
+    dose_start : float
+        The starting dose for the dose filter in units of e-/A^2.
+    dose_end : float
+        The ending dose for the dose filter in units of e-/A^2.
+    critical_bfactor : float
+        The critical B factor for the dose filter. If -1, the Grant and
+        Grigorieff (2015) critical exposure dose weighting is used.
+    modify_signal : Literal["None", "sqrt", "rel_diff"]
+        The method to modify the signal after applying the dose filter. Options
+        are "None", "sqrt", and "rel_diff".
+        - 'None': No modification is applied.'
+        - 'sqrt': The square root of the filter is applied.
+        - 'rel_diff': Filter becomes 1 - (1 - filter) / (1 + filter).
+    rfft : bool
+        If True, the filter is returned in rfft format. Default is True.
+    fftshift : bool
+        If True, the filter is fftshifted. Default is False.
+
+    Returns
+    -------
+    torch.Tensor
+    """
+    dose_filter = cumulative_dose_filter_3d(
+        volume_shape=shape,
+        start_exposure=dose_start,
+        end_exposure=dose_end,
+        Bfac=critical_bfactor,
+        rfft=rfft,
+        fftshift=fftshift,
+    )
+
+    if modify_signal == "None":
+        pass
+    elif modify_signal == "sqrt":
+        dose_filter = torch.sqrt(dose_filter)
+    elif modify_signal == "rel_diff":
+        denominator = 1 + dose_filter
+        epsilon = 1e-10
+        denominator = torch.clamp(denominator, min=epsilon)
+        modification = 1 - (1 - dose_filter) / denominator
+        dose_filter = modification
+
+    return dose_filter
+
+
+def apply_simulation_filters(
+    upsampled_volume: torch.Tensor,
+    actual_upsampling: int,
+    final_shape: tuple[int, int, int],
+    apply_dose_weighting: bool,
+    dose_start: float,
+    dose_end: float,
+    dose_filter_modify_signal: Literal["None", "sqrt", "rel_diff"],
+    dose_filter_critical_bfactor: float,
+    apply_dqe: bool,
+    mtf_frequencies: torch.Tensor,
+    mtf_amplitudes: torch.Tensor,
+) -> torch.Tensor:
+    """Apply filters to the simulated volume.
+
+    This function does the following:
+    1. Apply dose weighting in the upsampled Fourier volume, if requested
+    2. Fourier crop back to the desired size (final_shape)
+    3. Apply DQE to the volume in Fourier space
+    4. Inverse FFT to get the final real-space simulated volume
+
+    Parameters
+    ----------
+    upsampled_volume : torch.Tensor
+        The upsampled volume in Fourier space.
+    actual_upsampling : int
+        The actual upsampling factor used for the simulation.
     final_shape : tuple[int, int, int]
-        The desired final shape of the final simulation volume.
-    upsampled_pixel_size : float
-        The pixel/voxel size of the upsampled volume.
-    upsampling : int
-        The upsampling factor.
-    dose_weighting : bool
-        If true, apply cumulative dose weighting.
-    num_frames : int
-        The number of frames for the simulation. Used for calculating the dose
-        weighting filter
-    fluence_per_frame : float
-        The fluence per frame in units of (e-/A^2). Used for calculating the
-        dose weighting filter.
-    dose_B : float
-        Parameter to choose the dose weighting filter. If -1, use the Grant
-        Grigorieff critical exposure dose weighting.
-    modify_signal : int
-        Integer to determine how to modify the signal by the dose filter.
-        Follows cisTEM convention of:
-            1: 1 - (1 - filter) / (1 + filter)
-            2: (filter)**0.5
-            3: (filter)
+        The final shape of the simulated volume.
+    apply_dose_weighting : bool
+        If True, apply dose weighting to the simulation.
+    dose_start : float
+        The starting dose for the dose weighting filter in units of e-/A^2.
+    dose_end : float
+        The ending dose for the dose weighting filter in units of e-/A^2.
+    dose_filter_modify_signal : Literal["None", "sqrt", "rel_diff"]
+        The method to modify the signal after applying the dose filter. Options
+        are "None", "sqrt", and "rel_diff".
+    dose_filter_critical_bfactor : float
+        The critical B factor for the dose filter. If -1, the Grant and
+        Grigorieff (2015) critical exposure dose weighting is used.
     apply_dqe : bool
-        If true, apply DQE to the volume. Requires an MTF file.
-    mtf_filename : str
-        The filename of the MTF file. Required if apply_dqe is True.
+        If True, apply the detective quantum efficiency (DQE) filter to the
+        simulation. Applied in regular (not upsampled) Fourier space.
+    mtf_frequencies : torch.Tensor
+        The frequencies for the modulation transfer function (MTF) filter in
+        units of inverse pixels ranging from 0 to 0.5.
+    mtf_amplitudes : torch.Tensor
+        The amplitudes for the modulation transfer function (MTF) filter at the
+        corresponding frequencies.
 
     Returns
     -------
@@ -299,46 +413,24 @@ def apply_simulation_filters(
         The final simulated volume.
 
     """
-    ####################################################################
-    ### Filters to apply before Fourier cropping (on upsampled grid) ###
-    ####################################################################
+    upsampled_volume_rfft = torch.fft.rfftn(upsampled_volume, dim=(-3, -2, -1))
+    upsampled_shape = upsampled_volume.shape
 
-    # Dose weight
-    if dose_weighting:
-        print("Dose weighting")
-        dose_filter = cumulative_dose_filter_3d(
-            volume_shape=upsampled_shape,
-            num_frames=num_frames,
-            start_exposure=0,
-            pixel_size=upsampled_pixel_size,
-            flux=fluence_per_frame,
-            Bfac=dose_B,
+    # Calculate and apply dose filter, if requested
+    if apply_dose_weighting:
+        dose_filter = calculate_simulation_dose_filter_3d(
+            shape=upsampled_shape,
+            dose_start=dose_start,
+            dose_end=dose_end,
+            critical_bfactor=dose_filter_critical_bfactor,
+            modify_signal=dose_filter_modify_signal,
             rfft=True,
             fftshift=False,
         )
-
-        if modify_signal == 1:
-            # Add small epsilon to prevent division by zero
-            denominator = 1 + dose_filter
-            epsilon = 1e-10
-            denominator = torch.clamp(denominator, min=epsilon)
-            modification = 1 - (1 - dose_filter) / denominator
-
-            # Check for invalid values
-            if torch.any(torch.isnan(modification)):
-                print("Warning: NaN values in modification factor")
-                modification = torch.nan_to_num(modification, nan=1.0)
-            dose_filter = modification
-        elif modify_signal == 2:
-            dose_filter = dose_filter**0.5
-        else:
-            dose_filter = dose_filter
-
         upsampled_volume_rfft *= dose_filter
 
-    # fourier crop back to desired output size
-    if upsampling > 1:
-        print("Fourier cropping back to desired size")
+    # Fourier crop back to desired size
+    if actual_upsampling != 1:
         upsampled_volume_rfft = fourier_rescale_3d_force_size(
             volume_fft=upsampled_volume_rfft,
             volume_shape=upsampled_shape,
@@ -347,28 +439,21 @@ def apply_simulation_filters(
             fftshift=False,
         )
 
-    #################################################################
-    ### Filters to apply after Fourier cropping (on desired grid) ###
-    #################################################################
-
-    # If I apply dqe before Fourier cropping like cisTEM the output is the same.
-    # I apply it after Fourier cropping
+    # Apply DQE, if requested
     if apply_dqe:
-        print("Applying a DQE")
-        mtf_frequencies, mtf_amplitudes = read_mtf(file_path=mtf_filename)
         mtf = make_mtf_grid(
             image_shape=final_shape,
-            mtf_frequencies=mtf_frequencies,  # 1D tensor
-            mtf_amplitudes=mtf_amplitudes,  # 1D tensor
+            mtf_frequencies=mtf_frequencies,
+            mtf_amplitudes=mtf_amplitudes,
             rfft=True,
             fftshift=False,
         )
         upsampled_volume_rfft *= mtf
 
-    # inverse FFT
+    # Inverse FFT
     cropped_volume = torch.fft.irfftn(
         upsampled_volume_rfft,
-        s=(final_shape[0], final_shape[0], final_shape[0]),
+        s=final_shape,
         dim=(-3, -2, -1),
     )
     cropped_volume = torch.fft.ifftshift(cropped_volume, dim=(-3, -2, -1))
@@ -377,90 +462,91 @@ def apply_simulation_filters(
 
 
 def simulate3d(
-    pdb_filename: str,
-    output_filename: str,
-    sim_volume_shape: tuple[int, int, int],
+    atom_positions_zyx: torch.Tensor,
+    atom_ids: list[str],
+    atom_b_factors: torch.Tensor,
+    beam_energy_kev: float,
     sim_pixel_spacing: float,
-    num_frames: int,
-    fluence_per_frame: float,
-    beam_energy_kev: float = 300,
-    dose_weighting: bool = True,
-    dose_B: float = -1,  # -1 is use Grant Grigorieff dose weighting
-    apply_dqe: bool = True,
-    mtf_filename: str = "",
-    b_scaling: float = 1.0,
-    added_B: float = 0.0,
-    upsampling: int = -1,  # -1 is calculate automatically
-    gpu_id: Optional[int] = -999,  # -999 cpu, -1 auto, 0 = gpuid
-    modify_signal: int = 1,
-) -> None:
-    """
-    Run the 3D simulation.
+    sim_volume_shape: tuple[int, int, int],
+    requested_upsampling: int = -1,
+    apply_dose_weighting: bool = True,
+    dose_start: float = 0.0,
+    dose_end: float = 30.0,
+    dose_filter_modify_signal: Literal["None", "sqrt", "rel_diff"] = "None",
+    dose_filter_critical_bfactor: float = -1,
+    apply_dqe: bool = False,
+    mtf_frequencies: torch.Tensor = None,
+    mtf_amplitudes: torch.Tensor = None,
+    # gpu_ids: int | list[int] = -999,  # TODO: implement gpu selection
+) -> torch.Tensor:
+    """Simulate 3D electron scattering volume with requested parameters.
 
-    Args:
-        pdb_filename: The filename of the PDB file to use as the reference
-            structure.
-        output_filename: The filename of the output MRC file.
-        sim_volume_shape: The shape of the simulation volume in voxels.
-        sim_pixel_spacing: The pixel spacing of the simulation volume, in units
-            of Angstroms.
-        num_frames: The number of frames for the simulation. Used for dose
-            weighting.
-        fluence_per_frame: The fluence per frame, in units of (e-/A^2). Used
-            for dose weighting.
-        beam_energy_kev: The beam energy in keV.
-        dose_weighting: Whether to apply dose weighting.
-        dose_B: The B factor for dose weighting.
-        apply_dqe: Whether to apply DQE.
-        mtf_filename: The filename of the MTF file.
-        b_scaling: The B scaling factor.
-        added_B: The added B factor.
-        upsampling: The upsampling factor.
-        gpu_ids: The specified GPU id (-999 cpu, -1 auto)
-        modify_signal: The signal modification factor.
+    Parameters
+    ----------
+    atom_positions_zyx : torch.Tensor
+        The atom positions in Angstroms. Shape (N, 3) where N is the number of
+        atoms.
+    atom_ids : list[str]
+        The atomic IDs of each atom in the model.
+    atom_b_factors : torch.Tensor
+        The B factors of each atom in the model.
+    beam_energy_kev : float
+        The electron beam energy in keV.
+    sim_pixel_spacing : float
+        The pixel spacing for the final simulation in Angstroms.
+    sim_volume_shape : tuple[int, int, int]
+        The shape of the final simulation volume. Center of volume is at
+        the origin (0.0, 0.0, 0.0).
+    requested_upsampling : int
+        The upsampling factor to use for the simulation. If -1, the upsampling
+        factor is calculated automatically.
+    apply_dose_weighting : bool
+        If True, apply dose weighting to the simulation.
+    dose_start : float
+        The starting dose for the dose weighting filter in units of e-/A^2.
+        Default is 0.0.
+    dose_end : float
+        The ending dose for the dose weighting filter in units of e-/A^2.
+        Default is 30.0.
+    dose_filter_modify_signal : str
+        The method to modify the signal after applying the dose filter. Options
+        are "None", "sqrt", and "rel_diff". Default is "None".
+        - 'None': No modification is applied.
+        - 'sqrt': The square root of the filter is applied.
+        - 'rel_diff': Filter becomes 1 - (1 - filter) / (1 + filter).
+    dose_filter_critical_bfactor : float
+        The critical B factor for the dose filter. Default is -1, which uses
+        the Grant and Grigorieff (2015) critical exposure dose weighting.
+    apply_dqe : bool
+        If True, apply the detective quantum efficiency (DQE) filter to the
+        simulation. If True, both 'mtf_frequencies' and 'mtf_amplitudes' must
+        be provided. Default is False.
+    mtf_frequencies : torch.Tensor
+        The frequencies for the modulation transfer function (MTF) filter in
+        units of inverse pixels ranging from 0 to 0.5. Required if 'apply_dqe'
+        is True.
+    mtf_amplitudes : torch.Tensor
+        The amplitudes for the modulation transfer function (MTF) filter at the
+        corresponding frequencies. Must be the same length as
+        'mtf_frequencies'. Required if 'apply_dqe' is True.
+    # gpu_ids : int | list[int]
 
     Returns
     -------
-        None
+    torch.Tensor
+        The simulated 3D volume in real space.
     """
-    # Select devices
-    if gpu_id == -999:  # Special case for CPU-only
-        device = torch.device("cpu")
-    else:
-        device = select_gpu(gpu_id)
-    print(f"Using device: {device!s}")  # TODO: Move to logging
-
-    # This is the main program
-    start_time = time.time()
-
-    #################
-    ### Constants ###
-    #################
-
-    lead_term = _calculate_lead_term(beam_energy_kev, sim_pixel_spacing)
-
-    #########################################
-    ### PDB model to coords/ids/b-factors ###
-    #########################################
-
-    # Then load pdb (a separate file) and get non-H atom
-    # list with zyx coords and isotropic b factors
-    print("Loading PDB model")  # TODO: Move to logging
-    atom_positions_zyx, atom_ids, atom_b_factors = load_model(pdb_filename)
-    atom_positions_zyx, atom_ids, atom_b_factors = remove_hydrogens(
-        atom_positions_zyx, atom_ids, atom_b_factors
+    # Validate portions of the input before continuing
+    _validate_dose_filter_inputs(
+        dose_filter_modify_signal, dose_filter_critical_bfactor
     )
+    _validate_dqe_filter_inputs(apply_dqe, mtf_frequencies, mtf_amplitudes)
 
-    # Scale the B-factors (now doing it after filtered unlike before)
-    # NOTE: the 0.25 is strange but keeping like cisTEM for now
-    print("Calculating scattering parameters")  # TODO: Move to logging
-    atom_b_factors = 0.25 * (atom_b_factors * b_scaling + added_B)
+    # Select devices for calculation
+    # TODO: Implement GPU selection
 
-    #################################################
-    ### Atomwise scattering potential calculation ###
-    #################################################
-
-    print("Simulating atomwise scattering potentials")
+    # Calculate the atom-wise scattering potentials
+    lead_term = _calculate_lead_term(beam_energy_kev, sim_pixel_spacing)
     scattering_results = simulate_atomwise_scattering_potentials(
         atom_positions_zyx=atom_positions_zyx,
         atom_ids=atom_ids,
@@ -468,56 +554,35 @@ def simulate3d(
         sim_pixel_spacing=sim_pixel_spacing,
         sim_volume_shape=sim_volume_shape,
         lead_term=lead_term,
-        upsampling=upsampling,
+        upsampling=requested_upsampling,
     )
 
     neighborhood_potentials = scattering_results["neighborhood_potentials"]
     voxel_positions = scattering_results["voxel_positions"]
     upsampled_shape = scattering_results["upsampled_shape"]
-    upsampled_pixel_size = scattering_results["upsampled_pixel_size"]
-    upsampling = scattering_results["upsampling"]
+    actual_upsampling = scattering_results["actual_upsampling"]
 
-    # Calculate the upsampled volume
-    upsampled_volume = torch.zeros(upsampled_shape, dtype=torch.float32, device=device)
+    # Place the voxel neighborhoods in the final, upsampled volume
+    upsampled_volume = torch.zeros(upsampled_shape, dtype=torch.float32)
     upsampled_volume = place_voxel_neighborhoods_in_volume(
         neighborhood_potentials=neighborhood_potentials,
         voxel_positions=voxel_positions,
         final_volume=upsampled_volume,
     )
 
-    ############################################
-    ### Additional post-simulation filtering ###
-    ############################################
-
-    # Convert to Fourier space for filtering
-    upsampled_volume = torch.fft.fftshift(upsampled_volume, dim=(-3, -2, -1))
-    upsampled_volume_FFT = torch.fft.rfftn(upsampled_volume, dim=(-3, -2, -1))
-
+    # Apply filters to the simulation
     final_volume = apply_simulation_filters(
-        upsampled_volume_rfft=upsampled_volume_FFT,
-        upsampled_shape=upsampled_shape,
-        upsampled_pixel_size=upsampled_pixel_size,
-        upsampling=upsampling,
+        upsampled_volume=upsampled_volume,
+        actual_upsampling=actual_upsampling,
         final_shape=sim_volume_shape,
-        dose_weighting=dose_weighting,
-        num_frames=num_frames,
-        fluence_per_frame=fluence_per_frame,
-        dose_B=dose_B,
-        modify_signal=modify_signal,
+        apply_dose_weighting=apply_dose_weighting,
+        dose_start=dose_start,
+        dose_end=dose_end,
+        dose_filter_modify_signal=dose_filter_modify_signal,
+        dose_filter_critical_bfactor=dose_filter_critical_bfactor,
         apply_dqe=apply_dqe,
-        mtf_filename=mtf_filename,
+        mtf_frequencies=mtf_frequencies,
+        mtf_amplitudes=mtf_amplitudes,
     )
 
-    print("Writing mrc file")
-    tensor_to_mrc(
-        output_filename=output_filename,
-        final_volume=final_volume,
-        sim_pixel_spacing=sim_pixel_spacing,
-    )
-
-    end_time = time.time()
-    elapsed_time = end_time - start_time
-    minutes = int(elapsed_time // 60)
-    seconds = int(elapsed_time % 60)
-    print("Finished simulation")
-    print(f"Total simulation time: {minutes} minutes {seconds} seconds")
+    return final_volume
