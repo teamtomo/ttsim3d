@@ -18,10 +18,6 @@ def good_simulator_config() -> dict:
         "apply_dqe": True,
         "mtf_reference": "k2_300kv",
         "upsampling": -1,
-        "store_dose_filter": False,
-        "store_dqe_filter": False,
-        "store_neighborhood_atom_potentials": False,
-        "store_upsampled_volume_rfft": False,
         "store_volume": False,
     }
 

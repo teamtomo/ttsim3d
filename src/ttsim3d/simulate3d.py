@@ -337,7 +337,7 @@ def calculate_simulation_dose_filter_3d(
         volume_shape=shape,
         start_exposure=dose_start,
         end_exposure=dose_end,
-        Bfac=critical_bfactor,
+        crit_exposure_bfactor=critical_bfactor,
         rfft=rfft,
         fftshift=fftshift,
     )
@@ -456,7 +456,8 @@ def apply_simulation_filters(
         s=final_shape,
         dim=(-3, -2, -1),
     )
-    cropped_volume = torch.fft.ifftshift(cropped_volume, dim=(-3, -2, -1))
+    # NOTE: ifftshift not needed since volume here was never fftshifted
+    # cropped_volume = torch.fft.ifftshift(cropped_volume, dim=(-3, -2, -1))
 
     return cropped_volume
 

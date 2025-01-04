@@ -71,21 +71,6 @@ class SimulatorConfig(BaseModel):
     upsampling : int
         The upsampling factor to apply to the simulation. The default is -1 and
         corresponds to automatic calculation of the upsampling factor.
-    store_dose_filter : bool
-        If True, store the dose filter in the simulator class under the
-        attribute `Simulator.dose_filter`. Default is False.
-    store_dqe_filter : bool
-        If True, store the DQE filter in the simulator class under the
-        attribute `Simulator.dqe_filter`. Default is False.
-    store_neighborhood_atom_potentials : bool
-        If True, store the calculated potentials around each of the atoms
-        under the attribute `Simulator.neighborhood_atom_potentials` with the
-        associated positions in the 3D volume under
-        `Simulator.neighborhood_atom_positions`. Default is False.
-    store_upsampled_volume_rfft : bool
-        If True, store the real fast Fourier transform (rfft) of the upsampled
-        volume before any filters are applied under the attribute
-        `Simulator.upsampled_volume_rfft`. Default is False.
     store_volume : bool
         If True, store the final simulated volume in real space after requested
         simulation filters are applied under the attribute `Simulator.volume`.
@@ -109,10 +94,6 @@ class SimulatorConfig(BaseModel):
     mtf_reference: Annotated[str, Field(default="k2_300kV")] = "k2_300kV"
     upsampling: Annotated[int, Field(default=-1)] = -1
 
-    # store_dose_filter: Annotated[bool, Field(default=True)] = True
-    # store_dqe_filter: Annotated[bool, Field(default=True)] = True
-    # store_neighborhood_atom_potentials: Annotated[bool, Field(default=True)] = False
-    # store_upsampled_volume_rfft: Annotated[bool, Field(default=True)] = False
     store_volume: Annotated[bool, Field(default=True)] = True
 
     @field_validator("crit_exposure_bfactor")  # type: ignore
@@ -192,34 +173,6 @@ class Simulator(BaseModel):
     atom_b_factors : torch.Tensor
         The B-factors (float tensor) of the atoms in the structure in units of
         A^2. Non-serializable attribute.
-    upsampled_shape : tuple[int, int, int]
-        The shape of the upsampled volume. Non-serializable attribute.
-    upsampled_pixel_size : float
-        The pixel size of the upsampled volume in units of Angstroms.
-        Non-serializable attribute.
-    actual_upsampling : int
-        The actual upsampling factor applied to the simulation.
-        Non-serializable attribute.
-    neighborhood_atom_potentials : torch.Tensor
-        The calculated potentials around each atom in the structure.
-        Non-serializable attribute. Only stored if requested in the
-        SimulatorConfig.
-    neighborhood_atom_positions : torch.Tensor
-        The voxel positions of the calculated potentials around each atom in
-        the structure. Non-serializable attribute. Only stored if requested in
-        the SimulatorConfig.
-    dose_filter: torch.Tensor
-        The dose filter applied to the simulation. Non-serializable attribute.
-        Only stored if `SimulatorConfig.apply_dose_weighting` is True and
-        storage requested in the SimulatorConfig.
-    dqe_filter : torch.Tensor
-        The DQE filter applied to the simulation. Non-serializable attribute.
-        Only stored if `SimulatorConfig.apply_dqe` is True and storage
-        requested in the SimulatorConfig.
-    upsampled_volume_rfft : torch.Tensor
-        The real fast Fourier transform of the upsampled volume before any
-        filters are applied. Non-serializable attribute. Only stored if
-        requested in the SimulatorConfig.
     volume : torch.Tensor
         The simulated volume in real space after requested simulation filters
         are applied. Non-serializable attribute. Only stored if requested in
@@ -259,14 +212,6 @@ class Simulator(BaseModel):
     atom_positions_zyx: ExcludedTensor
     atom_identities: ExcludedTensor
     atom_b_factors: ExcludedTensor
-    upsampled_shape: ExcludedTensor
-    upsampled_pixel_size: ExcludedTensor
-    actual_upsampling: ExcludedTensor
-    neighborhood_atom_potentials: ExcludedTensor
-    neighborhood_atom_positions: ExcludedTensor
-    dose_filter: ExcludedTensor
-    dqe_filter: ExcludedTensor
-    upsampled_volume_rfft: ExcludedTensor
     volume: ExcludedTensor
 
     def __init__(self, **data: Any) -> None:
