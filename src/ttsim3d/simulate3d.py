@@ -31,7 +31,7 @@ def _calculate_lead_term(beam_energy_kev: float, sim_pixel_spacing: float) -> fl
     Parameters
     ----------
     beam_energy_kev : float
-        The beam energy in keV.
+        The beam energy in kV.
     sim_pixel_spacing : float
         The pixel spacing for the final simulation in Angstroms.
 
@@ -492,7 +492,7 @@ def simulate3d(
     atom_b_factors : torch.Tensor
         The B factors of each atom in the model.
     beam_energy_kev : float
-        The electron beam energy in keV.
+        The electron beam energy in kV.
     sim_pixel_spacing : float
         The pixel spacing for the final simulation in Angstroms.
     sim_volume_shape : tuple[int, int, int]
