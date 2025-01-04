@@ -1,8 +1,7 @@
-data_
-
+data_mtf_k2_300kv
 loop_
-_rlnResolutionInversePixel #1
-_rlnMtfValue #2
+_rlnResolutionInversePixel
+_rlnMtfValue
 0.0000 1.00000
 0.0005 0.988714
 0.001 0.985642

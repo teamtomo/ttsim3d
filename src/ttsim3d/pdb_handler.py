@@ -1,10 +1,14 @@
 """Handle PDB related operations."""
 
+import pathlib
+
 import mmdf
 import torch
 
 
-def load_model(file_path: str) -> tuple[torch.Tensor, list[str], torch.Tensor]:
+def load_model(
+    file_path: str | pathlib.Path,
+) -> tuple[torch.Tensor, list[str], torch.Tensor]:
     """Pdb file to atom coordinates, ids, and B factors.
 
     Loads a pdb from `file_path` and returns the atom coordinates (in Angstroms),

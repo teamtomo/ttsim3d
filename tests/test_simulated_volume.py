@@ -11,8 +11,10 @@ import mrcfile
 import numpy as np
 import pytest
 import requests
+from torch_fourier_filter.mtf import read_mtf
 
-from ttsim3d import simulate3d
+from ttsim3d.pdb_handler import load_model, remove_hydrogens
+from ttsim3d.simulate3d import simulate3d
 
 # Remote filepaths for testing
 PDB_STRUCTURE_FILEPATH = "https://zenodo.org/records/14219436/files/parsed_6Q8Y_whole_LSU_match3.pdb?download=1"
@@ -28,26 +30,6 @@ this_dir = this_path.parent
 tmp_dir = this_dir / "tmp"
 
 
-SIMULATION_PARAMS = {
-    "pdb_filename": tmp_dir / "parsed_6Q8Y_whole_LSU_match3.pdb",
-    "output_filename": tmp_dir / "parsed_6Q8Y_whole_LSU_match3_simulate_test.mrc",
-    "sim_volume_shape": (400, 400, 400),  # in voxels
-    "sim_pixel_spacing": 0.95,  # in Angstroms
-    "num_frames": 50,
-    "fluence_per_frame": 1,  # in e-/A^2
-    "beam_energy_kev": 300,  # in keV
-    "dose_weighting": True,
-    "dose_B": -1,
-    "apply_dqe": True,
-    "mtf_filename": tmp_dir / "mtf_k2_300kV.star",
-    "b_scaling": 1.0,
-    "added_B": 0.0,
-    "upsampling": -1,  # -1 is calculate automatically
-    "gpu_id": -999,  # -999 cpu, -1 auto, 0 = gpuid
-    "modify_signal": 1,
-}
-
-
 def download_file(url: str, dest_folder: str) -> str:
     """Download a file from a URL to a destination folder."""
     if not os.path.exists(dest_folder):
@@ -55,6 +37,10 @@ def download_file(url: str, dest_folder: str) -> str:
 
     filename = url.split("/")[-1].split("?")[0]
     file_path = os.path.join(dest_folder, filename)
+
+    # Skip download if file already exists
+    if os.path.exists(file_path):
+        return file_path
 
     response = requests.get(url, stream=True)
     response.raise_for_status()  # Raise an error for bad status codes
@@ -65,21 +51,56 @@ def download_file(url: str, dest_folder: str) -> str:
         for data in response.iter_content(block_size):
             file.write(data)
 
-    print(f"Downloaded {file_path}")
+    # print(f"Downloaded {file_path}")
     return file_path
 
 
 def setup_simulation():
     """Download necessary files and setup temporary directory."""
-    print(this_path)
-    print(this_dir)
-    print(tmp_dir)
+    # print(this_path)
+    # print(this_dir)
+    # print(tmp_dir)
 
     pdb_filepath = download_file(PDB_STRUCTURE_FILEPATH, tmp_dir)
     mrc_filepath = download_file(SIMULATED_MRC_FILEPATH, tmp_dir)
     dqe_filepath = download_file(DQE_STARFILE_FILEPATH, tmp_dir)
 
     return pdb_filepath, mrc_filepath, dqe_filepath
+
+
+def get_simulation_kwargs(pdb_filepath: str, dqe_filepath: str) -> dict:
+    """Get simulation keyword arguments for the test."""
+    # Base parameters
+    kwargs = {
+        "beam_energy_kev": 300,
+        "sim_pixel_spacing": 0.95,
+        "sim_volume_shape": (400, 400, 400),
+        "requested_upsampling": -1,
+        "apply_dose_weighting": True,
+        "dose_start": 0,
+        "dose_end": 50,
+        "dose_filter_modify_signal": "None",
+        "dose_filter_critical_bfactor": -1.0,
+        "apply_dqe": True,
+    }
+
+    # Load in atom data from pdb file
+    atom_positions_zyx, atom_ids, atom_b_factors = load_model(pdb_filepath)
+    atom_positions_zyx, atom_ids, atom_b_factors = remove_hydrogens(
+        atom_positions_zyx, atom_ids, atom_b_factors
+    )
+    atom_b_factors *= 0.25  # NOTE: Scaling to match cisTEM b-factor scaling
+
+    kwargs["atom_positions_zyx"] = atom_positions_zyx
+    kwargs["atom_ids"] = atom_ids
+    kwargs["atom_b_factors"] = atom_b_factors
+
+    # Load in DQE data from star file
+    mtf_frequencies, mtf_amplitudes = read_mtf(dqe_filepath)
+    kwargs["mtf_frequencies"] = mtf_frequencies
+    kwargs["mtf_amplitudes"] = mtf_amplitudes
+
+    return kwargs
 
 
 def is_ci() -> bool:
@@ -100,13 +121,15 @@ def test_simulate3d():
     assert os.path.exists(mrc_filepath), f"File not found: {mrc_filepath}"
     assert os.path.exists(dqe_filepath), f"File not found: {dqe_filepath}"
 
-    # Run the simulation
-    simulate3d.simulate3d(**SIMULATION_PARAMS)
+    simulate3d_kwargs = get_simulation_kwargs(pdb_filepath, dqe_filepath)
 
-    # Compare the simulated mrc file to the reference
+    # Run the simulation
+    simulated_volume = simulate3d(**simulate3d_kwargs)
+    simulated_volume = simulated_volume.cpu().numpy()
+
+    # Compare the simulated volume to the reference mrc file
     with (
-        mrcfile.open(SIMULATION_PARAMS["output_filename"]) as sim_mrc,
         mrcfile.open(mrc_filepath) as ref_mrc,
     ):
-        assert sim_mrc.data.shape == ref_mrc.data.shape
-        assert np.allclose(sim_mrc.data, ref_mrc.data, atol=1e-3)
+        assert simulated_volume.shape == ref_mrc.data.shape
+        assert np.allclose(simulated_volume, ref_mrc.data, atol=1e-3)
