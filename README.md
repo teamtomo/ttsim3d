@@ -87,6 +87,7 @@ sim = Simulator(
     volume_shape=(256, 256, 256),
     b_factor_scaling=1.0,
     additional_b_factor=15.0,  # Add to all atoms
+    simulator_config=sim_conf,
 )
 
 # Run the simulation
