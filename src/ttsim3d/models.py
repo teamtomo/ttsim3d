@@ -2,10 +2,15 @@
 
 import os
 import pathlib
-from typing import Annotated, Any, Literal, Optional
+from typing import Annotated, Any, Optional
 
 import torch
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+)
 from pydantic.json_schema import SkipJsonSchema
 from torch_fourier_filter.mtf import read_mtf
 
@@ -81,36 +86,25 @@ class SimulatorConfig(BaseModel):
     model_dump -> dict
     """
 
+    model_config = ConfigDict(validate_default=True)
+
     # Serializable attributes
     voltage: Annotated[float, Field(ge=0.0)] = 300.0
     apply_dose_weighting: Annotated[bool, Field(default=True)] = True
-    crit_exposure_bfactor: Annotated[float, Field(default=-1)] = -1
-    dose_filter_modify_signal: Annotated[
-        Literal["None", "sqrt", "rel_diff"], Field(default="None")
-    ] = "None"
+    crit_exposure_bfactor: float | int = -1
+    dose_filter_modify_signal: str = "None"
     dose_start: Annotated[float, Field(ge=0.0)] = 0.0
     dose_end: Annotated[float, Field(ge=0.0)] = 30.0
-    apply_dqe: Annotated[bool, Field(default=True)] = True
-    mtf_reference: Annotated[str, Field(default="k2_300kV")] = "k2_300kV"
-    upsampling: Annotated[int, Field(default=-1)] = -1
-
-    store_volume: Annotated[bool, Field(default=True)] = True
-
-    @field_validator("crit_exposure_bfactor")  # type: ignore
-    def validate_crit_exposure_bfactor(cls, v):
-        """Validate model input `crit_exposure_bfactor`."""
-        if not isinstance(v, (float, int)):
-            e = f"Invalid critical exposure B-factor of type: {v}."
-            e += "Expected a float or integer."
-            raise ValueError(e)
-
-        return v
+    apply_dqe: bool = True
+    mtf_reference: str = "k2_300kv"
+    upsampling: int = -1
+    store_volume: bool = True
 
     @field_validator("dose_filter_modify_signal")  # type: ignore
     def validate_dose_filter_modify_signal(cls, v):
         """Validate model input `dose_filter_modify_signal`."""
         if v not in ALLOWED_DOSE_FILTER_MODIFICATIONS:
-            e = f"Invalid dose filter signal modification: {v}."
+            e = f"Invalid dose filter signal modification: {v}. "
             e += f"Allowed values are: {ALLOWED_DOSE_FILTER_MODIFICATIONS}"
             raise ValueError(e)
         return v
@@ -137,10 +131,6 @@ class SimulatorConfig(BaseModel):
         frequencies, amplitudes = read_mtf(file_path=self.mtf_reference)
 
         return frequencies, amplitudes
-
-    # def model_dump(self) -> dict:
-    #     """Return the model as a dictionary."""
-    #     return self.dict()
 
 
 class Simulator(BaseModel):
@@ -281,7 +271,7 @@ class Simulator(BaseModel):
         assert self.atom_identities is not None, "No atom identities loaded."
 
         if atom_indices is None:
-            atom_indices = torch.arange(self.atom_identities.size(0))
+            atom_indices = torch.arange(self.atom_positions_zyx.size(0))
 
         # Select GPUs to use, or use CPU
         # TODO: Implement GPU selection
@@ -303,7 +293,7 @@ class Simulator(BaseModel):
             apply_dose_weighting=self.simulator_config.apply_dose_weighting,
             dose_start=self.simulator_config.dose_start,
             dose_end=self.simulator_config.dose_end,
-            dose_filter_modify_signal=self.simulator_config.dose_filter_modify_signal,
+            dose_filter_modify_signal=self.simulator_config.dose_filter_modify_signal,  # type: ignore
             dose_filter_critical_bfactor=self.simulator_config.crit_exposure_bfactor,
             apply_dqe=self.simulator_config.apply_dqe,
             mtf_frequencies=mtf_frequencies,
