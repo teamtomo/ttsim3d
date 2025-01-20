@@ -122,7 +122,7 @@ from ttsim3d.models import Simulator, SimulatorConfig
     multiple=True,
     help="A list of GPU IDs to use for the simulation. Currently unused.",
 )
-def main(
+def run_simulation_cli(
     pdb_filepath: str,
     mrc_filepath: str,
     pixel_spacing: float,
@@ -145,7 +145,7 @@ def main(
         voltage=voltage,
         apply_dose_weighting=apply_dose_weighting,
         crit_exposure_bfactor=crit_exposure_bfactor,
-        dose_filter_modify_signal=dose_filter_modify_signal,  # type: ignore
+        dose_filter_modify_signal=dose_filter_modify_signal,
         dose_start=dose_start,
         dose_end=dose_end,
         apply_dqe=apply_dqe,
@@ -164,4 +164,4 @@ def main(
 
 
 if __name__ == "__main__":
-    main()
+    run_simulation_cli()
