@@ -11,3 +11,7 @@
 ### Modified
 
 - `ttsim3d.simulate3d.simulate3d` accepts different arguments than before.
+
+### Fixed
+
+- Minor bug fixes related to parsing input files.

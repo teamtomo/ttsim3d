@@ -45,6 +45,7 @@ dependencies = [
     "requests",
     "torch-fourier-filter",
     "pydantic",
+    "click",
 ]
 
 [tool.hatch.metadata]
@@ -73,7 +74,7 @@ repository = "https://github.com/jdickerson95/ttsim3d"
 # https://peps.python.org/pep-0621/#entry-points
 # same as console_scripts entry point
 [project.scripts]
-ttsim3d-cli = "programs.run_ttsim3d:main"
+ttsim3d-cli = "programs.run_ttsim3d:run_simulation_cli"
 
 # [project.entry-points."some.group"]
 # tomatoes = "ttsim3d:main_tomatoes"
