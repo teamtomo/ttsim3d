@@ -330,15 +330,18 @@ def place_voxel_neighborhoods_in_volume(
         The final volume with the neighborhoods placed in.
     """
     index_positions = voxel_positions.long()
-    final_volume.index_put_(
-        indices=(
-            index_positions[:, :, 0],
-            index_positions[:, :, 1],
-            index_positions[:, :, 2],
-        ),
-        values=neighborhood_potentials,
-        accumulate=True,
-    )
+    try:
+        final_volume.index_put_(
+            indices=(
+                index_positions[:, :, 0],
+                index_positions[:, :, 1],
+                index_positions[:, :, 2],
+            ),
+            values=neighborhood_potentials,
+            accumulate=True,
+        )
+    except IndexError:
+        raise ValueError("Error: Your box size is smaller than the potential") from None
 
     return final_volume
 
