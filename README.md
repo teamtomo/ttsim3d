@@ -7,7 +7,7 @@
 [![codecov](https://codecov.io/gh/jdickerson95/ttsim3d/branch/main/graph/badge.svg)](https://codecov.io/gh/jdickerson95/ttsim3d)
 
 Simulate 3D electrostatic potential maps from a PDB file in PyTorch.
-This package currently replicates theory laid out in [Benjamin & Grigorieffa (2021)](https://doi.org/10.1107/S2052252521008538).
+This package currently replicates theory laid out in [Himes & Grigorieff (2021)](https://doi.org/10.1107/S2052252521008538).
 
 For a full list of changes, see the [CHANGELOG](CHANGELOG.md).
 
