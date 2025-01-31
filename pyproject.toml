@@ -46,6 +46,7 @@ dependencies = [
     "torch-fourier-filter",
     "pydantic",
     "click",
+    "psutil",
 ]
 
 [tool.hatch.metadata]
