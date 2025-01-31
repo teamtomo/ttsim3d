@@ -9,6 +9,7 @@ from torch_fourier_filter.ctf import calculate_relativistic_electron_wavelength
 from torch_fourier_filter.dose_weight import cumulative_dose_filter_3d
 from torch_fourier_filter.mtf import make_mtf_grid
 
+from ttsim3d.device_handler import calculate_batches
 from ttsim3d.grid_coords import (
     fourier_rescale_3d_force_size,
     get_atom_voxel_indices,
@@ -177,15 +178,13 @@ def _setup_upsampling_coords(
     return atom_indices, atom_dds, voxel_offsets_flat
 
 
-def simulate_atomwise_scattering_potentials(
+def setup_atomwise_scattering_potentials_simulation(
     atom_positions_zyx: torch.Tensor,  # shape (N, 3)
-    atom_ids: list[str],
     atom_b_factors: torch.Tensor,
     sim_pixel_spacing: float,
     sim_volume_shape: tuple[int, int, int],
-    lead_term: float,
     upsampling: int = -1,
-) -> torch.Tensor:
+) -> dict:
     """Simulates the scattering potentials for each atom around its neighborhood.
 
     Parameters
@@ -207,7 +206,11 @@ def simulate_atomwise_scattering_potentials(
         The upsampling factor. If -1, the upsampling factor is calculated
         automatically.
 
-
+    Returns
+    -------
+    dict
+        A dictionary containing the atom indices, atom dds, voxel offsets,
+        upsampled shape, upsampled pixel size, and actual upsampling factor.
     """
     actual_upsampling, upsampled_pixel_size, upsampled_shape = _setup_sim3d_upsampling(
         sim_pixel_spacing=sim_pixel_spacing,
@@ -223,6 +226,50 @@ def simulate_atomwise_scattering_potentials(
         mean_b_factor=mean_b_factor,
     )
 
+    return {
+        "atom_indices": atom_indices,
+        "atom_dds": atom_dds,
+        "voxel_offsets_flat": voxel_offsets_flat,
+        "upsampled_shape": upsampled_shape,
+        "upsampled_pixel_size": upsampled_pixel_size,
+        "actual_upsampling": actual_upsampling,
+    }
+
+
+def simulate_atomwise_scattering_potentials(
+    atom_ids: list[str],
+    atom_b_factors: torch.Tensor,
+    lead_term: float,
+    atom_indices: torch.Tensor,
+    atom_dds: torch.Tensor,
+    voxel_offsets_flat: torch.Tensor,
+    upsampled_pixel_size: float,
+) -> torch.Tensor:
+    """Simulates the scattering potentials for each atom around its neighborhood.
+
+    Parameters
+    ----------
+    atom_ids : list[str]
+        The atom IDs as a list of uppercase element symbols.
+    atom_b_factors : torch.Tensor
+        The atom B factors.
+    lead_term : float
+        The lead term for the scattering potential.
+    atom_indices : torch.Tensor
+        The atom indices.
+    atom_dds : torch.Tensor
+        The atom displacements from integer coordinates.
+    voxel_offsets_flat : torch.Tensor
+        The voxel offsets for the neighborhood around the atom voxel.
+    upsampled_pixel_size : float
+        The upsampled pixel size in Angstroms.
+
+    Returnss
+    -------
+    dict
+        A dictionary containing the neighborhood potentials and voxel positions.
+
+    """
     # Reshaping tensors for future broadcasting
     atom_pos = einops.rearrange(atom_indices, "a d -> a 1 d")
     atom_dds = einops.rearrange(atom_dds, "a d -> a 1 d")
@@ -235,8 +282,11 @@ def simulate_atomwise_scattering_potentials(
     relative_coords = (
         voxel_positions - atom_pos - atom_dds - PIXEL_OFFSET
     ) * upsampled_pixel_size
+
     coords1 = relative_coords
     coords2 = relative_coords + upsampled_pixel_size
+
+    del relative_coords
 
     ########################################
     ### Scattering potential calculation ###
@@ -253,9 +303,6 @@ def simulate_atomwise_scattering_potentials(
     return {
         "neighborhood_potentials": neighborhood_potentials,
         "voxel_positions": voxel_positions,
-        "upsampled_shape": upsampled_shape,
-        "upsampled_pixel_size": upsampled_pixel_size,
-        "actual_upsampling": actual_upsampling,
     }
 
 
@@ -548,28 +595,52 @@ def simulate3d(
 
     # Calculate the atom-wise scattering potentials
     lead_term = _calculate_lead_term(beam_energy_kev, sim_pixel_spacing)
-    scattering_results = simulate_atomwise_scattering_potentials(
+
+    # set up atomwise scattering potentials
+    setup_results = setup_atomwise_scattering_potentials_simulation(
         atom_positions_zyx=atom_positions_zyx,
-        atom_ids=atom_ids,
         atom_b_factors=atom_b_factors,
         sim_pixel_spacing=sim_pixel_spacing,
         sim_volume_shape=sim_volume_shape,
-        lead_term=lead_term,
         upsampling=requested_upsampling,
     )
 
-    neighborhood_potentials = scattering_results["neighborhood_potentials"]
-    voxel_positions = scattering_results["voxel_positions"]
-    upsampled_shape = scattering_results["upsampled_shape"]
-    actual_upsampling = scattering_results["actual_upsampling"]
+    upsampled_shape = setup_results["upsampled_shape"]
+    actual_upsampling = setup_results["actual_upsampling"]
 
-    # Place the voxel neighborhoods in the final, upsampled volume
+    # Nowsplit to batches
     upsampled_volume = torch.zeros(upsampled_shape, dtype=torch.float32)
-    upsampled_volume = place_voxel_neighborhoods_in_volume(
-        neighborhood_potentials=neighborhood_potentials,
-        voxel_positions=voxel_positions,
-        final_volume=upsampled_volume,
-    )
+
+    num_batches, atoms_per_batch = calculate_batches(setup_results, upsampled_volume)
+
+    print(f"Number of batches: {num_batches}")
+
+    for batch_idx in range(num_batches):
+        start_idx = batch_idx * atoms_per_batch
+        end_idx = min(
+            (batch_idx + 1) * atoms_per_batch, setup_results["atom_indices"].shape[0]
+        )
+
+        # Process a batch of atoms
+        scattering_results = simulate_atomwise_scattering_potentials(
+            atom_ids=atom_ids[start_idx:end_idx],
+            atom_b_factors=atom_b_factors[start_idx:end_idx],
+            lead_term=lead_term,
+            atom_indices=setup_results["atom_indices"][start_idx:end_idx],
+            atom_dds=setup_results["atom_dds"][start_idx:end_idx],
+            voxel_offsets_flat=setup_results["voxel_offsets_flat"],
+            upsampled_pixel_size=setup_results["upsampled_pixel_size"],
+        )
+
+        neighborhood_potentials = scattering_results["neighborhood_potentials"]
+        voxel_positions = scattering_results["voxel_positions"]
+
+        # Update the upsampled volume with the current batch
+        upsampled_volume = place_voxel_neighborhoods_in_volume(
+            neighborhood_potentials=neighborhood_potentials,
+            voxel_positions=voxel_positions,
+            final_volume=upsampled_volume,
+        )
 
     # Apply filters to the simulation
     final_volume = apply_simulation_filters(

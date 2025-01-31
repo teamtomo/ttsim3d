@@ -2,7 +2,62 @@
 
 from typing import Optional
 
+import psutil
 import torch
+
+
+def calculate_batches(
+    setup_results: dict,
+    upsampled_volume: torch.Tensor,
+    memory_buffer: float = 0.8,
+    fudge_factor: int = 4,
+) -> tuple[int, int]:
+    """Calculate the number of batches based on available memory.
+
+    Parameters
+    ----------
+    setup_results : dict
+        Contains the setup results including atom indices and voxel offsets.
+    upsampled_volume : torch.Tensor
+        The upsampled volume tensor.
+    memory_buffer : float, optional
+        The fraction of available memory to use, by default 0.8.
+    fudge_factor : int, optional
+        A factor to account for additional memory usage, by default 4.
+
+    Returns
+    -------
+    int
+        The number of batches.
+    """
+    num_el = (
+        setup_results["atom_indices"].shape[0]
+        * setup_results["voxel_offsets_flat"].shape[0]
+        * setup_results["voxel_offsets_flat"].shape[1]
+    )
+    memory_size_needed = 4 * (
+        num_el * setup_results["voxel_offsets_flat"].element_size()
+    ) + 2 * (num_el * upsampled_volume.element_size())
+    memory_size_needed += upsampled_volume.numel() * upsampled_volume.element_size()
+    memory_size_needed *= fudge_factor
+
+    available_memory = psutil.virtual_memory().available
+
+    atoms_per_batch = max(
+        1,
+        int(
+            (available_memory * memory_buffer)
+            / memory_size_needed
+            * setup_results["atom_indices"].shape[0]
+        ),
+    )
+    num_batches = max(
+        1,
+        (setup_results["atom_indices"].shape[0] + atoms_per_batch - 1)
+        // atoms_per_batch,
+    )
+
+    return num_batches, atoms_per_batch
 
 
 def select_gpu(
