@@ -283,18 +283,13 @@ def simulate_atomwise_scattering_potentials(
         voxel_positions - atom_pos - atom_dds - PIXEL_OFFSET
     ) * upsampled_pixel_size
 
-    coords1 = relative_coords
-    coords2 = relative_coords + upsampled_pixel_size
-
-    del relative_coords
-
     ########################################
     ### Scattering potential calculation ###
     ########################################
 
     neighborhood_potentials = get_scattering_potential_of_voxel_batch(
-        zyx_coords1=coords1,  # shape(a, v, d)
-        zyx_coords2=coords2,  # shape(a, v, d)
+        zyx_coords1=relative_coords,  # shape(a, v, d)
+        zyx_coords2=relative_coords + upsampled_pixel_size,  # shape(a, v, d)
         atom_ids=atom_ids,
         atom_b_factors=atom_b_factors,
         lead_term=lead_term,
