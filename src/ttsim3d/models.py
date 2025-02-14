@@ -93,7 +93,7 @@ class SimulatorConfig(BaseModel):
     voltage: Annotated[float, Field(ge=0.0)] = 300.0
     apply_dose_weighting: Annotated[bool, Field(default=True)] = True
     crit_exposure_bfactor: float | int = -1
-    dose_filter_modify_signal: str = "None"
+    dose_filter_modify_signal: str = "rel_diff"
     dose_start: Annotated[float, Field(ge=0.0)] = 0.0
     dose_end: Annotated[float, Field(ge=0.0)] = 30.0
     apply_dqe: bool = True
