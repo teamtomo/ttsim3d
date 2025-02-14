@@ -16,6 +16,7 @@ from torch_fourier_filter.mtf import read_mtf
 
 from ttsim3d.mrc_handler import tensor_to_mrc
 from ttsim3d.pdb_handler import load_model, remove_hydrogens
+from ttsim3d.simulate2d import simulate2d
 from ttsim3d.simulate3d import ALLOWED_DOSE_FILTER_MODIFICATIONS, simulate3d
 
 DEFAULT_MTF_REFERENCES = {
@@ -337,5 +338,214 @@ class Simulator(BaseModel):
         tensor_to_mrc(
             output_filename=str(mrc_filepath),
             final_volume=volume,
+            sim_pixel_spacing=self.pixel_spacing,
+        )
+
+
+class Simulator2D(BaseModel):
+    """Class for simulating a 2D image from a atomistic structure.
+
+    Attributes
+    ----------
+    pixel_spacing : float
+        The pixel spacing of the simulated volume in units of Angstroms. Must
+        be greater than 0, and defaults to 1.0 Angstroms.
+    image_shape : tuple[int, int]
+        The shape of the simulated image in pixels. The default is
+        (400, 400).
+    pdb_filepath : pathlib.Path
+        The path to the PDB file containing the atomic structure to simulate.
+    b_factor_scaling : float
+        The scaling factor to apply to the B-factors of the atoms in the pdb
+        file. The default is 1.0.
+    additional_b_factor : float
+        Additional B-factor to apply to the atoms in the pdb file. The default
+        is 0.0.
+    simulator_config : SimulatorConfig
+        Simulation configuration.
+    atom_positions_yx : torch.Tensor
+        The positions (float tensor) of the atoms in the structure in units of
+        Angstroms. Non-serializable attribute.
+    atom_identities : torch.Tensor
+        The atomic identities (str tensor) of the atoms in the structure.
+        Non-serializable attribute.
+    atom_b_factors : torch.Tensor
+        The B-factors (float tensor) of the atoms in the structure in units of
+        A^2. Non-serializable attribute.
+    image : torch.Tensor
+        The simulated image in real space after requested simulation filters
+        are applied. Non-serializable attribute. Only stored if requested in
+        the SimulatorConfig.
+
+    Methods
+    -------
+    __init__ -> None
+    load_atoms_from_pdb_model -> None
+        Loads the structure atoms from the held pdb file into the attributes
+        `atom_positions_yx`, `atom_identities`, and `atom_b_factors`.
+    get_scale_atom_b_factors -> torch.Tensor
+        Returns the scaled b-factors of the atoms in the structure based on
+        the attributes `b_factor_scaling` and `additional_b_factor`.
+    run -> torch.Tensor
+        Runs the simulation and returns the simulated volume.
+    export_to_mrc -> None
+        Exports the simulated volume to an MRC file.
+    """
+
+    # Pydantic model configuration
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    # Serializable attributes
+    pixel_spacing: Annotated[float, Field(ge=0.0)] = 1.0
+    image_shape: Annotated[tuple[int, int], Field(default=(400, 400))] = (
+        400,
+        400,
+    )
+    pdb_filepath: Annotated[pathlib.Path, Field(...)]
+    b_factor_scaling: Annotated[float, Field(default=1.0)] = 1.0
+    additional_b_factor: Annotated[float, Field(default=0.0)] = 0.0
+    simulator_config: SimulatorConfig
+
+    # Non-serializable and schema-excluded attributes
+    atom_positions_yx: ExcludedTensor
+    atom_identities: ExcludedTensor
+    atom_b_factors: ExcludedTensor
+    image: ExcludedTensor
+
+    def __init__(self, **data: Any) -> None:
+        super().__init__(**data)
+
+        self.load_atoms_from_pdb_model()
+
+    def load_atoms_from_pdb_model(self) -> None:
+        """Loads the structure atoms from held pdb file."""
+        atom_positions_zyx, atom_ids, atom_b_factors = load_model(self.pdb_filepath)
+        atom_positions_zyx, atom_ids, atom_b_factors = remove_hydrogens(
+            atom_positions_zyx, atom_ids, atom_b_factors
+        )
+        # Collapse z dimension to get 2D coordinates
+        atom_positions_yx = atom_positions_zyx[:, 1:]  # Keep only y,x coordinates
+
+        self.atom_positions_yx = atom_positions_yx
+        self.atom_identities = atom_ids
+        self.atom_b_factors = atom_b_factors
+
+    def get_scale_atom_b_factors(self) -> torch.Tensor:
+        """Returns b-factors transformed by the scale and additional b-factor.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        b_fac: torch.Tensor
+            The scaled b-factors.
+        """
+        if self.atom_b_factors is None:
+            raise ValueError("No atom B-factors loaded.")
+
+        b_fac = self.atom_b_factors * self.b_factor_scaling
+        b_fac += self.additional_b_factor
+
+        # NOTE (Josh): cisTEM includes a 0.25 factor. Unsure why, but keeping
+        # consistent with the original implementation for now.
+        b_fac *= 0.25
+
+        return b_fac
+
+    def run(
+        self,
+        gpu_ids: Optional[int | list[int]] = None,
+        atom_indices: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Runs the simulation and returns the simulated volume.
+
+        Parameters
+        ----------
+        gpu_ids: int | list[int]
+            A list of GPU IDs to use for the simulation. The default is 'None'
+            which will use the CPU. A value of '-1' will use all available
+            GPUs, otherwise a list of integers greater than or equal to 0 are
+            expected.
+        atom_indices: torch.Tensor
+            The indices of the atoms to simulate. The default is 'None' which
+            will simulate all atoms in the structure.
+
+        Returns
+        -------
+        volume: torch.Tensor
+            The simulated volume.
+        """
+        assert self.atom_positions_yx is not None, "No atom positions loaded."
+        assert self.atom_identities is not None, "No atom identities loaded."
+
+        if atom_indices is None:
+            atom_indices = torch.arange(self.atom_positions_yx.size(0))
+
+        # Select GPUs to use, or use CPU
+        # TODO: Implement GPU selection
+
+        # Get the scaled atom b-factors
+        atom_b_factors = self.get_scale_atom_b_factors()
+
+        # Calculate the mtf_frequencies and mtf_amplitudes from reference file
+        mtf_frequencies, mtf_amplitudes = self.simulator_config.mtf_tensors
+
+        image = simulate2d(
+            atom_positions_yx=self.atom_positions_yx,
+            atom_ids=self.atom_identities,
+            atom_b_factors=atom_b_factors,
+            beam_energy_kev=self.simulator_config.voltage,
+            sim_pixel_spacing=self.pixel_spacing,
+            sim_image_shape=self.image_shape,
+            requested_upsampling=self.simulator_config.upsampling,
+            apply_dose_weighting=self.simulator_config.apply_dose_weighting,
+            dose_start=self.simulator_config.dose_start,
+            dose_end=self.simulator_config.dose_end,
+            dose_filter_modify_signal=self.simulator_config.dose_filter_modify_signal,  # type: ignore
+            dose_filter_critical_bfactor=self.simulator_config.crit_exposure_bfactor,
+            apply_dqe=self.simulator_config.apply_dqe,
+            mtf_frequencies=mtf_frequencies,
+            mtf_amplitudes=mtf_amplitudes,
+        )
+
+        if self.simulator_config.store_volume:
+            self.image = image
+
+        return image
+
+    def export_to_mrc(
+        self,
+        mrc_filepath: str | os.PathLike,
+        gpu_ids: Optional[int | list[int]] = None,
+        atom_indices: Optional[torch.Tensor] = None,
+    ) -> None:
+        """Exports the simulated volume to an MRC file.
+
+        Parameters
+        ----------
+        mrc_filepath: str | os.PathLike
+            The file path to save the MRC file.
+        gpu_ids: int | list[int]
+            A list of GPU IDs to use for the simulation. The default is 'None'
+            which will use the CPU. A value of '-1' will use all available
+            GPUs, otherwise a list of integers greater than or equal to 0 are
+            expected. The default is 'None'. This is passed to the `run`
+            method.
+        atom_indices: torch.Tensor
+            The indices of the atoms to simulate. The default is 'None' which
+            will simulate all atoms in the structure. This is passed to the
+            `run` method.
+
+        Returns
+        -------
+        None
+        """
+        image = self.run(gpu_ids=gpu_ids, atom_indices=atom_indices)
+
+        tensor_to_mrc(
+            output_filename=str(mrc_filepath),
+            final_volume=image,
             sim_pixel_spacing=self.pixel_spacing,
         )
