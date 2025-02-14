@@ -363,7 +363,7 @@ class Simulator2D(BaseModel):
         is 0.0.
     simulator_config : SimulatorConfig
         Simulation configuration.
-    atom_positions_yx : torch.Tensor
+    atom_positions_zyx : torch.Tensor
         The positions (float tensor) of the atoms in the structure in units of
         Angstroms. Non-serializable attribute.
     atom_identities : torch.Tensor
@@ -407,7 +407,7 @@ class Simulator2D(BaseModel):
     simulator_config: SimulatorConfig
 
     # Non-serializable and schema-excluded attributes
-    atom_positions_yx: ExcludedTensor
+    atom_positions_zyx: ExcludedTensor
     atom_identities: ExcludedTensor
     atom_b_factors: ExcludedTensor
     image: ExcludedTensor
@@ -423,10 +423,9 @@ class Simulator2D(BaseModel):
         atom_positions_zyx, atom_ids, atom_b_factors = remove_hydrogens(
             atom_positions_zyx, atom_ids, atom_b_factors
         )
-        # Collapse z dimension to get 2D coordinates
-        atom_positions_yx = atom_positions_zyx[:, 1:]  # Keep only y,x coordinates
 
-        self.atom_positions_yx = atom_positions_yx
+
+        self.atom_positions_zyx = atom_positions_zyx
         self.atom_identities = atom_ids
         self.atom_b_factors = atom_b_factors
 
@@ -477,8 +476,11 @@ class Simulator2D(BaseModel):
         volume: torch.Tensor
             The simulated volume.
         """
-        assert self.atom_positions_yx is not None, "No atom positions loaded."
+        assert self.atom_positions_zyx is not None, "No atom positions loaded."
         assert self.atom_identities is not None, "No atom identities loaded."
+
+        # Collapse z dimension to get 2D coordinates
+        atom_positions_yx = self.atom_positions_zyx[:, 1:]  # Keep only y,x coordinates
 
         if atom_indices is None:
             atom_indices = torch.arange(self.atom_positions_yx.size(0))
@@ -493,7 +495,7 @@ class Simulator2D(BaseModel):
         mtf_frequencies, mtf_amplitudes = self.simulator_config.mtf_tensors
 
         image = simulate2d(
-            atom_positions_yx=self.atom_positions_yx,
+            atom_positions_yx=atom_positions_yx,
             atom_ids=self.atom_identities,
             atom_b_factors=atom_b_factors,
             beam_energy_kev=self.simulator_config.voltage,
