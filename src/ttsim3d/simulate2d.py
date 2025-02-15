@@ -1,6 +1,6 @@
 """Simulation of 2D projection and associated helper functions."""
 
-from typing import Literal
+from typing import Literal, Optional, Union, List
 
 import einops
 import numpy as np
@@ -9,7 +9,7 @@ from torch_fourier_filter.ctf import calculate_relativistic_electron_wavelength
 from torch_fourier_filter.dose_weight import cumulative_dose_filter_3d
 from torch_fourier_filter.mtf import make_mtf_grid
 
-from ttsim3d.device_handler import calculate_batches
+from ttsim3d.device_handler import calculate_batches, get_device, move_tensor_to_device
 from ttsim3d.grid_coords_2d import (
     fourier_rescale_2d_force_size,
     get_atom_voxel_indices,
@@ -347,6 +347,7 @@ def calculate_simulation_dose_filter_2d(
     modify_signal: Literal["None", "sqrt", "rel_diff"],
     rfft: bool = True,
     fftshift: bool = False,
+    device: torch.device = None,
 ) -> torch.Tensor:
     """Helper function to calculate a cumulative dose filter for a simulation.
 
@@ -371,6 +372,8 @@ def calculate_simulation_dose_filter_2d(
         If True, the filter is returned in rfft format. Default is True.
     fftshift : bool
         If True, the filter is fftshifted. Default is False.
+    device : torch.device
+        The device to use for the calculation. Default is None.
 
     Returns
     -------
@@ -383,6 +386,7 @@ def calculate_simulation_dose_filter_2d(
         crit_exposure_bfactor=critical_bfactor,
         rfft=rfft,
         fftshift=fftshift,
+        device=device,
     )
 
     if modify_signal == "None":
@@ -456,7 +460,13 @@ def apply_simulation_filters(
         The final simulated volume.
 
     """
+    # Handle MPS device case - FFT needs to be done on CPU
+    device = upsampled_image.device
+    print(f"Device: {device}")
+    if device.type == 'mps':
+        upsampled_image = upsampled_image.cpu()
     upsampled_image_rfft = torch.fft.rfftn(upsampled_image, dim=(-2, -1))
+    # Move back to device
     upsampled_shape = upsampled_image.shape
 
     # Calculate and apply dose filter, if requested
@@ -469,7 +479,11 @@ def apply_simulation_filters(
             modify_signal=dose_filter_modify_signal,
             rfft=True,
             fftshift=False,
+            device=device,
         )
+        # Move back to device
+        if device.type == 'mps':
+            dose_filter = dose_filter.cpu()
         upsampled_image_rfft *= dose_filter
 
     # Fourier crop back to desired size
@@ -490,7 +504,10 @@ def apply_simulation_filters(
             mtf_amplitudes=mtf_amplitudes,
             rfft=True,
             fftshift=False,
+            device=device,
         )
+        if device.type == 'mps':
+            mtf = mtf.cpu()
         upsampled_image_rfft *= mtf
 
     # Inverse FFT
@@ -501,6 +518,10 @@ def apply_simulation_filters(
     )
     # NOTE: ifftshift not needed since volume here was never fftshifted
     # cropped_volume = torch.fft.ifftshift(cropped_volume, dim=(-3, -2, -1))
+
+    # Move back to device
+    if device.type == 'mps':
+        cropped_image = cropped_image.to(device)
 
     return cropped_image
 
@@ -521,9 +542,9 @@ def simulate2d(
     apply_dqe: bool = False,
     mtf_frequencies: torch.Tensor = None,
     mtf_amplitudes: torch.Tensor = None,
-    # gpu_ids: int | list[int] = -999,  # TODO: implement gpu selection
+    gpu_ids: Optional[Union[int, List[int]]] = None,
 ) -> torch.Tensor:
-    """Simulate 3D electron scattering volume with requested parameters.
+    """Simulate 2D electron scattering volume with requested parameters.
 
     Parameters
     ----------
@@ -573,13 +594,29 @@ def simulate2d(
         The amplitudes for the modulation transfer function (MTF) filter at the
         corresponding frequencies. Must be the same length as
         'mtf_frequencies'. Required if 'apply_dqe' is True.
-    # gpu_ids : int | list[int]
+    gpu_ids : Optional[Union[int, List[int]]]
+        Device selection:
+        - None: Use CPU
+        - -1: Use first available GPU
+        - >=0: Use specific CUDA device
+        - List[int]: Use specific CUDA devices (future multi-GPU support)
 
     Returns
     -------
     torch.Tensor
         The simulated 2D image in real space.
     """
+    # Get compute device
+    device = get_device(gpu_ids)
+    
+    # Move input tensors to device
+    atom_positions_yx = move_tensor_to_device(atom_positions_yx, device)
+    atom_b_factors = move_tensor_to_device(atom_b_factors, device)
+    if mtf_frequencies is not None:
+        mtf_frequencies = move_tensor_to_device(mtf_frequencies, device)
+    if mtf_amplitudes is not None:
+        mtf_amplitudes = move_tensor_to_device(mtf_amplitudes, device)
+
     # Validate portions of the input before continuing
     _validate_dose_filter_inputs(
         dose_filter_modify_signal, dose_filter_critical_bfactor
@@ -605,7 +642,7 @@ def simulate2d(
     actual_upsampling = setup_results["actual_upsampling"]
 
     # Nowsplit to batches
-    upsampled_image = torch.zeros(upsampled_shape, dtype=torch.float32)
+    upsampled_image = torch.zeros(upsampled_shape, dtype=torch.float32, device=device)
 
     num_batches, atoms_per_batch = calculate_batches(setup_results, upsampled_image)
 

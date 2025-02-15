@@ -96,7 +96,7 @@ def get_total_b_param(
     bPlusB: torch.Tensor
         Total B parameter for each atom in the neighborhood.
     """
-    b_params = get_b_param(atom_ids)
+    b_params = get_b_param(atom_ids).to(atom_b_factors.device)  # Ensure same device as atom_b_factors
     bPlusB = 2 * torch.pi / torch.sqrt(atom_b_factors.unsqueeze(1) + b_params)
 
     return bPlusB
@@ -149,8 +149,8 @@ def get_scattering_potential_of_voxel_batch(
         device = zyx_coords1.device
 
     # Get scattering parameters for atoms
-    params_a = get_a_param(atom_ids)
-    params_bPlusB = get_total_b_param(atom_ids, atom_b_factors)
+    params_a = get_a_param(atom_ids).to(device)
+    params_bPlusB = get_total_b_param(atom_ids, atom_b_factors).to(device)
 
     # Compare signs element-wise for batched coordinates
     t_all = (zyx_coords1 * zyx_coords2) >= 0  # Shape: (atomN, voxelN, 3)

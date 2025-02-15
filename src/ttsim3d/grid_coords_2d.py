@@ -58,14 +58,22 @@ def get_atom_voxel_indices(
     tuple[torch.Tensor,torch.Tensor]
         The voxel indices and the offset from the edge of the voxel.
     """
+    device = atom_yx.device
+    print(f"Device: {device}")
+    shape_tensor = torch.tensor(upsampled_shape, device=device)
+    offset_tensor = torch.tensor(offset, device=device)
+    pixel_size_tensor = torch.tensor(upsampled_pixel_size, device=device)
+    print(pixel_size_tensor.device)
     origin_idx = (
-        upsampled_shape[0] / 2,
-        upsampled_shape[1] / 2,
+        shape_tensor[0] / 2,
+        shape_tensor[1] / 2,
     )
+    origin_idx = torch.tensor(origin_idx, device=device)
+    print(f"Origin index device: {origin_idx.device}")
     this_coords = (
-        (atom_yx / upsampled_pixel_size)
-        + torch.tensor(origin_idx).unsqueeze(0)
-        + offset
+        (atom_yx / pixel_size_tensor)
+        + origin_idx.unsqueeze(0)
+        + offset_tensor
     )
     atom_indices = torch.floor(this_coords)  # these are the voxel indices
     atom_dds = (
@@ -119,11 +127,12 @@ def get_voxel_neighborhood_offsets(
         The offsets of the voxel neighborhood.
 
     """
+    device = mean_b_factor.device if isinstance(mean_b_factor, torch.Tensor) else 'cpu'
     # Get the size of the voxel neighbourhood to calculate the potential of each atom
     size_neighborhood = get_size_neighborhood_cistem(
         mean_b_factor, upsampled_pixel_size
     )
-    neighborhood_range = torch.arange(-size_neighborhood, size_neighborhood + 1)
+    neighborhood_range = torch.arange(-size_neighborhood, size_neighborhood + 1, device=device)
     # Create coordinate grids for the neighborhood
     sy, sx = torch.meshgrid(neighborhood_range, neighborhood_range, indexing="ij")
     voxel_offsets = torch.stack([sy, sx])  # (2, n, n)
