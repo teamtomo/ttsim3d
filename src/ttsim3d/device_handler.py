@@ -121,12 +121,12 @@ def select_gpu(
     """
     # Check if you can actually use a cuda gpu
     if not torch.cuda.is_available():
-        print("No GPU available, using CPU")
+        #print("No GPU available, using CPU")
         return [torch.device("cpu")]
 
     n_gpus = torch.cuda.device_count()
     if n_gpus == 0:
-        print("No GPU available, using CPU")
+        #print("No GPU available, using CPU")
         return [torch.device("cpu")]
 
     # If specific GPUs requested, validate and return them
@@ -138,22 +138,22 @@ def select_gpu(
             valid_device = torch.device(f"cuda:{gpu_id}")
 
         if valid_device is None:
-            print("No valid GPUs specified. Using CPU")
+            #print("No valid GPUs specified. Using CPU")
             return [torch.device("cpu")]
         return valid_device
 
     # Find GPU with most available memory
     gpu_memory_available = []
-    print("\nAvailable GPUs:")
+    #print("\nAvailable GPUs:")
     for i in range(n_gpus):
         torch.cuda.set_device(i)
         total_memory = torch.cuda.get_device_properties(i).total_memory
         allocated_memory = torch.cuda.memory_allocated(i)
         available = total_memory - allocated_memory
 
-        print(f"GPU {i}: {torch.cuda.get_device_properties(i).name}")
-        print(f"  Total memory: {total_memory/1024**3:.1f} GB")
-        print(f"  Available memory: {available/1024**3:.1f} GB")
+        #print(f"GPU {i}: {torch.cuda.get_device_properties(i).name}")
+        #print(f"  Total memory: {total_memory/1024**3:.1f} GB")
+        #print(f"  Available memory: {available/1024**3:.1f} GB")
 
         gpu_memory_available.append((i, available))
 
@@ -161,5 +161,5 @@ def select_gpu(
     selected_gpu_idx, _ = max(gpu_memory_available, key=lambda x: x[1])
     selected_gpu = torch.device(f"cuda:{selected_gpu_idx}")
 
-    print("\nSelected GPU:", selected_gpu)
+    #print("\nSelected GPU:", selected_gpu)
     return selected_gpu

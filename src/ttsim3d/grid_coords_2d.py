@@ -24,11 +24,11 @@ def get_upsampling(
         The upsampling factor.
     """
     if wanted_pixel_size > 1.5 and wanted_output_size * 4 < max_size:
-        print("Oversampling your 2d by a factor of 4 for calculation.")
+        #print("Oversampling your 2d by a factor of 4 for calculation.")
         return 4
 
     if 0.75 < wanted_pixel_size <= 1.5 and wanted_output_size * 2 < max_size:
-        print("Oversampling your 2d by a factor of 2 for calculation.")
+        #print("Oversampling your 2d by a factor of 2 for calculation.")
         return 2
 
     return 1
@@ -59,17 +59,17 @@ def get_atom_voxel_indices(
         The voxel indices and the offset from the edge of the voxel.
     """
     device = atom_yx.device
-    print(f"Device: {device}")
+    #print(f"Device: {device}")
     shape_tensor = torch.tensor(upsampled_shape, device=device)
     offset_tensor = torch.tensor(offset, device=device)
     pixel_size_tensor = torch.tensor(upsampled_pixel_size, device=device)
-    print(pixel_size_tensor.device)
+    #print(pixel_size_tensor.device)
     origin_idx = (
         shape_tensor[0] / 2,
         shape_tensor[1] / 2,
     )
     origin_idx = torch.tensor(origin_idx, device=device)
-    print(f"Origin index device: {origin_idx.device}")
+    #print(f"Origin index device: {origin_idx.device}")
     this_coords = (
         (atom_yx / pixel_size_tensor)
         + origin_idx.unsqueeze(0)

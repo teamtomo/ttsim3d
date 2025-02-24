@@ -462,7 +462,7 @@ def apply_simulation_filters(
     """
     # Handle MPS device case - FFT needs to be done on CPU
     device = upsampled_image.device
-    print(f"Device: {device}")
+    #print(f"Device: {device}")
     if device.type == 'mps':
         upsampled_image = upsampled_image.cpu()
     upsampled_image_rfft = torch.fft.rfftn(upsampled_image, dim=(-2, -1))
@@ -550,7 +550,7 @@ def simulate2d(
     ----------
     atom_positions_yx : torch.Tensor
         The atom positions in Angstroms. Shape (N, 2) where N is the number of
-        atoms.
+        atoms. also batch (b, n_atoms, 2)
     atom_ids : list[str]
         The atomic IDs of each atom in the model.
     atom_b_factors : torch.Tensor
@@ -646,7 +646,7 @@ def simulate2d(
 
     num_batches, atoms_per_batch = calculate_batches(setup_results, upsampled_image)
 
-    print(f"Number of batches: {num_batches}")
+    #print(f"Number of batches: {num_batches}")
 
     for batch_idx in range(num_batches):
         start_idx = batch_idx * atoms_per_batch
