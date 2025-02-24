@@ -1,6 +1,6 @@
 """Handles cpu/gpu device selection."""
 
-from typing import Optional
+from typing import Optional, Union
 
 import psutil
 import torch
@@ -58,6 +58,53 @@ def calculate_batches(
     )
 
     return num_batches, atoms_per_batch
+
+
+def get_device(gpu_ids: Optional[Union[int, list[int]]] = None) -> torch.device:
+    """Get the appropriate torch device based on availability and user preference.
+
+    Parameters
+    ----------
+    gpu_ids : Optional[Union[int, list[int]]]
+        Device selection preference:
+        - None: Use CPU
+        - -1: Use first available GPU (CUDA or MPS)
+        - >=0: Use specific CUDA device
+        - list[int]: Use specific CUDA devices (for multi-GPU)
+
+    Returns
+    -------
+    torch.device
+        The selected compute device
+    """
+    # Default to CPU
+    if gpu_ids is None:
+        return torch.device("cpu")
+
+    # Check for CUDA availability
+    if torch.cuda.is_available():
+        if isinstance(gpu_ids, list):
+            # Multi-GPU not yet implemented
+            return torch.device(f"cuda:{gpu_ids[0]}")
+        elif gpu_ids >= 0:
+            return torch.device(f"cuda:{gpu_ids}")
+        else:  # gpu_ids == -1
+            return torch.device("cuda:0")
+
+    # Check for MPS (Apple Silicon) availability
+    elif torch.backends.mps.is_available():
+        if gpu_ids is not None:  # User requested GPU
+            return torch.device("mps")
+
+    # Fallback to CPU
+    return torch.device("cpu")
+
+
+def move_tensor_to_device(tensor: torch.Tensor, device: torch.device) -> torch.Tensor:
+    """Move a tensor to the specified device if it's not already there."""
+    if tensor.device != device:
+        return tensor.to(device)
+    return tensor
 
 
 def select_gpu(

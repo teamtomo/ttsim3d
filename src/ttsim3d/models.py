@@ -2,7 +2,7 @@
 
 import os
 import pathlib
-from typing import Annotated, Any, Optional
+from typing import Annotated, Any, Optional, Union
 
 import torch
 from pydantic import (
@@ -246,18 +246,19 @@ class Simulator(BaseModel):
 
     def run(
         self,
-        gpu_ids: Optional[int | list[int]] = None,
+        gpu_ids: Optional[Union[int, list[int]]] = None,
         atom_indices: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Runs the simulation and returns the simulated volume.
 
         Parameters
         ----------
-        gpu_ids: int | list[int]
-            A list of GPU IDs to use for the simulation. The default is 'None'
-            which will use the CPU. A value of '-1' will use all available
-            GPUs, otherwise a list of integers greater than or equal to 0 are
-            expected.
+        gpu_ids : Optional[Union[int, list[int]]]
+            Device selection:
+            - None: Use CPU
+            - -1: Use first available GPU
+            - >=0: Use specific CUDA device
+            - list[int]: Use specific CUDA devices (future multi-GPU support)
         atom_indices: torch.Tensor
             The indices of the atoms to simulate. The default is 'None' which
             will simulate all atoms in the structure.
@@ -298,6 +299,7 @@ class Simulator(BaseModel):
             apply_dqe=self.simulator_config.apply_dqe,
             mtf_frequencies=mtf_frequencies,
             mtf_amplitudes=mtf_amplitudes,
+            gpu_ids=gpu_ids,
         )
 
         if self.simulator_config.store_volume:
