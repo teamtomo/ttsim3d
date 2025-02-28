@@ -277,13 +277,18 @@ class Simulator(BaseModel):
         # Choose which atoms to simulate
         if atom_indices is None:
             atom_indices = torch.arange(self.atom_positions_zyx.size(0))
+            atom_ids = self.atom_identities
+        else:
+            atom_ids = [
+                atom for i, atom in enumerate(self.atom_identities) if i in atom_indices
+            ]
 
         # Calculate the mtf_frequencies and mtf_amplitudes from reference file
         mtf_frequencies, mtf_amplitudes = self.simulator_config.mtf_tensors
 
         volume = simulate3d(
             atom_positions_zyx=self.atom_positions_zyx[atom_indices],
-            atom_ids=self.atom_identities[atom_indices],
+            atom_ids=atom_ids,
             atom_b_factors=atom_b_factors[atom_indices],
             beam_energy_kev=self.simulator_config.voltage,
             sim_pixel_spacing=self.pixel_spacing,
