@@ -388,8 +388,7 @@ def calculate_simulation_dose_filter_3d(
         crit_exposure_bfactor=critical_bfactor,
         rfft=rfft,
         fftshift=fftshift,
-        device=device,
-    )
+    ).to(device)
 
     if modify_signal == "None":
         pass
@@ -507,8 +506,7 @@ def apply_simulation_filters(
             mtf_amplitudes=mtf_amplitudes,
             rfft=True,
             fftshift=False,
-            device=device,
-        )
+        ).to(device)
         upsampled_volume_rfft *= mtf
 
     # Inverse FFT

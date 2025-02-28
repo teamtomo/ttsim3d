@@ -199,10 +199,10 @@ class Simulator(BaseModel):
     simulator_config: SimulatorConfig
 
     # Non-serializable and schema-excluded attributes
-    atom_positions_zyx: ExcludedTensor
-    atom_identities: ExcludedTensor
-    atom_b_factors: ExcludedTensor
-    volume: ExcludedTensor
+    atom_positions_zyx: ExcludedTensor  # type: ignore
+    atom_identities: ExcludedTensor  # type: ignore
+    atom_b_factors: ExcludedTensor  # type: ignore
+    volume: ExcludedTensor  # type: ignore
 
     def __init__(self, **data: Any) -> None:
         super().__init__(**data)
@@ -271,22 +271,20 @@ class Simulator(BaseModel):
         assert self.atom_positions_zyx is not None, "No atom positions loaded."
         assert self.atom_identities is not None, "No atom identities loaded."
 
-        if atom_indices is None:
-            atom_indices = torch.arange(self.atom_positions_zyx.size(0))
-
-        # Select GPUs to use, or use CPU
-        # TODO: Implement GPU selection
-
         # Get the scaled atom b-factors
         atom_b_factors = self.get_scale_atom_b_factors()
+
+        # Choose which atoms to simulate
+        if atom_indices is None:
+            atom_indices = torch.arange(self.atom_positions_zyx.size(0))
 
         # Calculate the mtf_frequencies and mtf_amplitudes from reference file
         mtf_frequencies, mtf_amplitudes = self.simulator_config.mtf_tensors
 
         volume = simulate3d(
-            atom_positions_zyx=self.atom_positions_zyx,
-            atom_ids=self.atom_identities,
-            atom_b_factors=atom_b_factors,
+            atom_positions_zyx=self.atom_positions_zyx[atom_indices],
+            atom_ids=self.atom_identities[atom_indices],
+            atom_b_factors=atom_b_factors[atom_indices],
             beam_energy_kev=self.simulator_config.voltage,
             sim_pixel_spacing=self.pixel_spacing,
             sim_volume_shape=self.volume_shape,
@@ -294,7 +292,7 @@ class Simulator(BaseModel):
             apply_dose_weighting=self.simulator_config.apply_dose_weighting,
             dose_start=self.simulator_config.dose_start,
             dose_end=self.simulator_config.dose_end,
-            dose_filter_modify_signal=self.simulator_config.dose_filter_modify_signal,  # type: ignore
+            dose_filter_modify_signal=self.simulator_config.dose_filter_modify_signal,
             dose_filter_critical_bfactor=self.simulator_config.crit_exposure_bfactor,
             apply_dqe=self.simulator_config.apply_dqe,
             mtf_frequencies=mtf_frequencies,
