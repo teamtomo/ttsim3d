@@ -24,11 +24,11 @@ def get_upsampling(
         The upsampling factor.
     """
     if wanted_pixel_size > 1.5 and wanted_output_size * 4 < max_size:
-        print("Oversampling your 3d by a factor of 4 for calculation.")
+        # print("Oversampling your 3d by a factor of 4 for calculation.")
         return 4
 
     if 0.75 < wanted_pixel_size <= 1.5 and wanted_output_size * 2 < max_size:
-        print("Oversampling your 3d by a factor of 2 for calculation.")
+        # print("Oversampling your 3d by a factor of 2 for calculation.")
         return 2
 
     return 1

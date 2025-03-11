@@ -26,7 +26,7 @@ def load_model(
     """
     df = mmdf.read(file_path)
     atom_zyx = torch.tensor(df[["z", "y", "x"]].to_numpy()).float()  # (n_atoms, 3)
-    atom_zyx -= torch.mean(atom_zyx, dim=0, keepdim=True)  # center
+    # atom_zyx -= torch.mean(atom_zyx, dim=0, keepdim=True)  # center
     atom_id = df["element"].str.upper().tolist()
     atom_b_factor = torch.tensor(df["b_isotropic"].to_numpy()).float()
 

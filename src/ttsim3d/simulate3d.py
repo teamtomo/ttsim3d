@@ -506,6 +506,7 @@ def apply_simulation_filters(
             mtf_amplitudes=mtf_amplitudes,
             rfft=True,
             fftshift=False,
+            device=device,
         ).to(device)
         upsampled_volume_rfft *= mtf
 
@@ -542,6 +543,7 @@ def simulate3d(
     mtf_frequencies: torch.Tensor = None,
     mtf_amplitudes: torch.Tensor = None,
     gpu_ids: Optional[Union[int, list[int]]] = None,
+    atom_batch_size: int = 16384,  # 2^14
 ) -> torch.Tensor:
     """Simulate 3D electron scattering volume with requested parameters.
 
@@ -640,9 +642,12 @@ def simulate3d(
     # Nowsplit to batches
     upsampled_volume = torch.zeros(upsampled_shape, dtype=torch.float32, device=device)
 
-    num_batches, atoms_per_batch = calculate_batches(setup_results, upsampled_volume)
-
-    print(f"Number of batches: {num_batches}")
+    # Only do automatic batch calculation if atom_batch_size is -1
+    if atom_batch_size == -1:
+        num_batches, atoms_per_batch = calculate_batches(setup_results, upsampled_volume)
+    else:
+        atoms_per_batch = atom_batch_size
+        num_batches = atom_positions_zyx.shape[0] // atoms_per_batch + 1
 
     for batch_idx in range(num_batches):
         start_idx = batch_idx * atoms_per_batch
