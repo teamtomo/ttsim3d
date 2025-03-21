@@ -146,6 +146,10 @@ class Simulator(BaseModel):
         (400, 400, 400).
     pdb_filepath : pathlib.Path
         The path to the PDB file containing the atomic structure to simulate.
+    center_atoms : bool
+        If True, center the atoms in the structure by their mean position. Default is
+        True. This can be useful if you've already aligned a structure and do not
+        want it shifted during simulation.s
     b_factor_scaling : float
         The scaling factor to apply to the B-factors of the atoms in the pdb
         file. The default is 1.0.
@@ -194,6 +198,7 @@ class Simulator(BaseModel):
         400,
     )
     pdb_filepath: Annotated[pathlib.Path, Field(...)]
+    center_atoms: Annotated[bool, Field(default=True)] = True
     b_factor_scaling: Annotated[float, Field(default=1.0)] = 1.0
     additional_b_factor: Annotated[float, Field(default=0.0)] = 0.0
     simulator_config: SimulatorConfig
@@ -211,7 +216,9 @@ class Simulator(BaseModel):
 
     def load_atoms_from_pdb_model(self) -> None:
         """Loads the structure atoms from held pdb file."""
-        atom_positions_zyx, atom_ids, atom_b_factors = load_model(self.pdb_filepath)
+        atom_positions_zyx, atom_ids, atom_b_factors = load_model(
+            self.pdb_filepath, self.center_atoms
+        )
         atom_positions_zyx, atom_ids, atom_b_factors = remove_hydrogens(
             atom_positions_zyx, atom_ids, atom_b_factors
         )
