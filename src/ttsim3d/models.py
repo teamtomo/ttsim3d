@@ -146,6 +146,10 @@ class Simulator(BaseModel):
         (400, 400, 400).
     pdb_filepath : pathlib.Path
         The path to the PDB file containing the atomic structure to simulate.
+    center_atoms : bool
+        If True, center the atoms in the structure by their mean position. Default is
+        True. This can be useful if you've already aligned a structure and do not
+        want it shifted during simulation.s
     b_factor_scaling : float
         The scaling factor to apply to the B-factors of the atoms in the pdb
         file. The default is 1.0.
@@ -194,15 +198,16 @@ class Simulator(BaseModel):
         400,
     )
     pdb_filepath: Annotated[pathlib.Path, Field(...)]
+    center_atoms: Annotated[bool, Field(default=True)] = True
     b_factor_scaling: Annotated[float, Field(default=1.0)] = 1.0
     additional_b_factor: Annotated[float, Field(default=0.0)] = 0.0
     simulator_config: SimulatorConfig
 
     # Non-serializable and schema-excluded attributes
-    atom_positions_zyx: ExcludedTensor
-    atom_identities: ExcludedTensor
-    atom_b_factors: ExcludedTensor
-    volume: ExcludedTensor
+    atom_positions_zyx: ExcludedTensor  # type: ignore
+    atom_identities: ExcludedTensor  # type: ignore
+    atom_b_factors: ExcludedTensor  # type: ignore
+    volume: ExcludedTensor  # type: ignore
 
     def __init__(self, **data: Any) -> None:
         super().__init__(**data)
@@ -211,7 +216,9 @@ class Simulator(BaseModel):
 
     def load_atoms_from_pdb_model(self) -> None:
         """Loads the structure atoms from held pdb file."""
-        atom_positions_zyx, atom_ids, atom_b_factors = load_model(self.pdb_filepath)
+        atom_positions_zyx, atom_ids, atom_b_factors = load_model(
+            self.pdb_filepath, self.center_atoms
+        )
         atom_positions_zyx, atom_ids, atom_b_factors = remove_hydrogens(
             atom_positions_zyx, atom_ids, atom_b_factors
         )
@@ -271,22 +278,25 @@ class Simulator(BaseModel):
         assert self.atom_positions_zyx is not None, "No atom positions loaded."
         assert self.atom_identities is not None, "No atom identities loaded."
 
-        if atom_indices is None:
-            atom_indices = torch.arange(self.atom_positions_zyx.size(0))
-
-        # Select GPUs to use, or use CPU
-        # TODO: Implement GPU selection
-
         # Get the scaled atom b-factors
         atom_b_factors = self.get_scale_atom_b_factors()
+
+        # Choose which atoms to simulate
+        if atom_indices is None:
+            atom_indices = torch.arange(self.atom_positions_zyx.size(0))
+            atom_ids = self.atom_identities
+        else:
+            atom_ids = [
+                atom for i, atom in enumerate(self.atom_identities) if i in atom_indices
+            ]
 
         # Calculate the mtf_frequencies and mtf_amplitudes from reference file
         mtf_frequencies, mtf_amplitudes = self.simulator_config.mtf_tensors
 
         volume = simulate3d(
-            atom_positions_zyx=self.atom_positions_zyx,
-            atom_ids=self.atom_identities,
-            atom_b_factors=atom_b_factors,
+            atom_positions_zyx=self.atom_positions_zyx[atom_indices],
+            atom_ids=atom_ids,
+            atom_b_factors=atom_b_factors[atom_indices],
             beam_energy_kev=self.simulator_config.voltage,
             sim_pixel_spacing=self.pixel_spacing,
             sim_volume_shape=self.volume_shape,
@@ -294,7 +304,7 @@ class Simulator(BaseModel):
             apply_dose_weighting=self.simulator_config.apply_dose_weighting,
             dose_start=self.simulator_config.dose_start,
             dose_end=self.simulator_config.dose_end,
-            dose_filter_modify_signal=self.simulator_config.dose_filter_modify_signal,  # type: ignore
+            dose_filter_modify_signal=self.simulator_config.dose_filter_modify_signal,
             dose_filter_critical_bfactor=self.simulator_config.crit_exposure_bfactor,
             apply_dqe=self.simulator_config.apply_dqe,
             mtf_frequencies=mtf_frequencies,
