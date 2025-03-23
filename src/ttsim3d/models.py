@@ -199,6 +199,7 @@ class Simulator(BaseModel):
     )
     pdb_filepath: Annotated[pathlib.Path, Field(...)]
     center_atoms: Annotated[bool, Field(default=True)] = True
+    remove_hydrogens: Annotated[bool, Field(default=True)] = True
     b_factor_scaling: Annotated[float, Field(default=1.0)] = 1.0
     additional_b_factor: Annotated[float, Field(default=0.0)] = 0.0
     simulator_config: SimulatorConfig
@@ -219,9 +220,10 @@ class Simulator(BaseModel):
         atom_positions_zyx, atom_ids, atom_b_factors = load_model(
             self.pdb_filepath, self.center_atoms
         )
-        atom_positions_zyx, atom_ids, atom_b_factors = remove_hydrogens(
-            atom_positions_zyx, atom_ids, atom_b_factors
-        )
+        if self.remove_hydrogens:
+            atom_positions_zyx, atom_ids, atom_b_factors = remove_hydrogens(
+                atom_positions_zyx, atom_ids, atom_b_factors
+            )
 
         self.atom_positions_zyx = atom_positions_zyx
         self.atom_identities = atom_ids
