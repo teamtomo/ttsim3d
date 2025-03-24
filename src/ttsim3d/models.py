@@ -80,6 +80,9 @@ class SimulatorConfig(BaseModel):
         If True, store the final simulated volume in real space after requested
         simulation filters are applied under the attribute `Simulator.volume`.
         Default is True.
+    atom_batch_size : int
+        The number of atoms to simulate in a single batch. The default is 16384
+        (2^14).
 
     Methods
     -------
@@ -99,6 +102,7 @@ class SimulatorConfig(BaseModel):
     mtf_reference: str = "k2_300kv"
     upsampling: int = -1
     store_volume: bool = True
+    atom_batch_size: int = 16384  # 2^14
 
     @field_validator("dose_filter_modify_signal")  # type: ignore
     def validate_dose_filter_modify_signal(cls, v):
@@ -312,6 +316,7 @@ class Simulator(BaseModel):
             mtf_frequencies=mtf_frequencies,
             mtf_amplitudes=mtf_amplitudes,
             gpu_ids=gpu_ids,
+            atom_batch_size=self.simulator_config.atom_batch_size,
         )
 
         if self.simulator_config.store_volume:
