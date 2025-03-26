@@ -43,7 +43,7 @@ dependencies = [
     "pydantic",
     "mmdf",
     "requests",
-    "torch-fourier-filter",
+    "torch-fourier-filter>=0.2.4",
     "pydantic",
     "click",
     "psutil",

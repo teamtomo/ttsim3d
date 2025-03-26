@@ -18,18 +18,19 @@ from ttsim3d.mrc_handler import tensor_to_mrc
 from ttsim3d.pdb_handler import load_model, remove_hydrogens
 from ttsim3d.simulate3d import ALLOWED_DOSE_FILTER_MODIFICATIONS, simulate3d
 
+_data_dir = pathlib.Path(__file__).parent / "data"
 DEFAULT_MTF_REFERENCES = {
-    "de20_300kv": "src/data/mtf_de20_300kV.star",
-    "falcon2_300kv": "src/data/mtf_falcon2_300kV.star",
-    "falcon3EC_200kv": "src/data/mtf_falcon3EC_200kV.star",
-    "falcon3EC_300kv": "src/data/mtf_falcon3EC_300kV.star",
-    "falcon4EC_200kv": "src/data/mtf_falcon4EC_200kV.star",
-    "falcon4EC_300kv": "src/data/mtf_k2_300kV_FL2.star",
-    "k2_300kv": "src/data/mtf_k2_300kV.star",
-    "k2_200kV_FL2": "src/data/mtf_k2_200kV_FL2.star",
-    "k2_300kV_FL2": "src/data/mtf_k2_300kV_FL2.star",
-    "k3_200kV_FL2": "src/data/mtf_standard_k3_200kV_FL2.star",
-    "k3_300kV_FL2": "src/data/mtf_standard_k3_300kV_FL2.star",
+    "de20_300kv": str(_data_dir / "mtf_de20_300kV.star"),
+    "falcon2_300kv": str(_data_dir / "mtf_falcon2_300kV.star"),
+    "falcon3EC_200kv": str(_data_dir / "mtf_falcon3EC_200kV.star"),
+    "falcon3EC_300kv": str(_data_dir / "mtf_falcon3EC_300kV.star"),
+    "falcon4EC_200kv": str(_data_dir / "mtf_falcon4EC_200kV.star"),
+    "falcon4EC_300kv": str(_data_dir / "mtf_k2_300kV_FL2.star"),
+    "k2_300kv": str(_data_dir / "mtf_k2_300kV.star"),
+    "k2_200kV_FL2": str(_data_dir / "mtf_k2_200kV_FL2.star"),
+    "k2_300kV_FL2": str(_data_dir / "mtf_k2_300kV_FL2.star"),
+    "k3_200kV_FL2": str(_data_dir / "mtf_standard_k3_200kV_FL2.star"),
+    "k3_300kV_FL2": str(_data_dir / "mtf_standard_k3_300kV_FL2.star"),
 }
 
 # Pydantic type annotation for large tensor excluded from JSON schema and dump
