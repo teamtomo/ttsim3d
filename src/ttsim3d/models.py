@@ -25,7 +25,7 @@ DEFAULT_MTF_REFERENCES = {
     "falcon3EC_200kv": str(_data_dir / "mtf_falcon3EC_200kV.star"),
     "falcon3EC_300kv": str(_data_dir / "mtf_falcon3EC_300kV.star"),
     "falcon4EC_200kv": str(_data_dir / "mtf_falcon4EC_200kV.star"),
-    "falcon4EC_300kv": str(_data_dir / "mtf_k2_300kV_FL2.star"),
+    "falcon4EC_300kv": str(_data_dir / "mtf_falcon4EC_300kV.star"),
     "k2_300kv": str(_data_dir / "mtf_k2_300kV.star"),
     "k2_200kV_FL2": str(_data_dir / "mtf_k2_200kV_FL2.star"),
     "k2_300kV_FL2": str(_data_dir / "mtf_k2_300kV_FL2.star"),
