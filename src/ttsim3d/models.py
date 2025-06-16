@@ -260,14 +260,14 @@ class Simulator(BaseModel):
 
     def run(
         self,
-        gpu_ids: Optional[Union[int, list[int]]] = None,
+        device: Optional[Union[int, list[int]]] = None,
         atom_indices: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Runs the simulation and returns the simulated volume.
 
         Parameters
         ----------
-        gpu_ids : Optional[Union[int, list[int]]]
+        device : Optional[Union[int, list[int]]]
             Device selection:
             - None: Use CPU
             - -1: Use first available GPU
@@ -316,7 +316,7 @@ class Simulator(BaseModel):
             apply_dqe=self.simulator_config.apply_dqe,
             mtf_frequencies=mtf_frequencies,
             mtf_amplitudes=mtf_amplitudes,
-            gpu_ids=gpu_ids,
+            device=device,
             atom_batch_size=self.simulator_config.atom_batch_size,
         )
 
@@ -328,7 +328,7 @@ class Simulator(BaseModel):
     def export_to_mrc(
         self,
         mrc_filepath: str | os.PathLike,
-        gpu_ids: Optional[int | list[int]] = None,
+        device: Optional[int | list[int]] = None,
         atom_indices: Optional[torch.Tensor] = None,
     ) -> None:
         """Exports the simulated volume to an MRC file.
@@ -337,7 +337,7 @@ class Simulator(BaseModel):
         ----------
         mrc_filepath: str | os.PathLike
             The file path to save the MRC file.
-        gpu_ids: int | list[int]
+        device: int | list[int]
             A list of GPU IDs to use for the simulation. The default is 'None'
             which will use the CPU. A value of '-1' will use all available
             GPUs, otherwise a list of integers greater than or equal to 0 are
@@ -352,7 +352,7 @@ class Simulator(BaseModel):
         -------
         None
         """
-        volume = self.run(gpu_ids=gpu_ids, atom_indices=atom_indices)
+        volume = self.run(device=device, atom_indices=atom_indices)
 
         tensor_to_mrc(
             output_filename=str(mrc_filepath),

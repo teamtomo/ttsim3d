@@ -1,9 +1,15 @@
 """Handles cpu/gpu device selection."""
 
+import warnings
 from typing import Optional, Union
 
 import psutil
 import torch
+
+MULTI_GPU_WARNING = (
+    "Multiple GPU devices were selected, but multi-device execution is not currently "
+    "supported by ttsim3d. Defaulting to the first device in the list..."
+)
 
 
 def calculate_batches(
@@ -41,6 +47,8 @@ def calculate_batches(
     memory_size_needed += upsampled_volume.numel() * upsampled_volume.element_size()
     memory_size_needed *= fudge_factor
 
+    # BUG: This looks at the system memory, not the GPU memory. This function
+    # somehow needs access to which GPU device is being used calculate from there.
     available_memory = psutil.virtual_memory().available
 
     atoms_per_batch = max(
@@ -60,51 +68,68 @@ def calculate_batches(
     return num_batches, atoms_per_batch
 
 
-def get_device(gpu_ids: Optional[Union[int, list[int]]] = None) -> torch.device:
-    """Get the appropriate torch device based on availability and user preference.
+def get_device(
+    device: Union[str, int, list[str], list[int]] = "all",
+) -> Union[torch.device, list[torch.device]]:
+    """Get the appropriate torch device(s) based on availability and user preference.
 
     Parameters
     ----------
-    gpu_ids : Optional[Union[int, list[int]]]
+    device : Union[str, int, list[str], list[int]]
         Device selection preference:
-        - None: Use CPU
-        - -1: Use first available GPU (CUDA or MPS)
-        - >=0: Use specific CUDA device
-        - list[int]: Use specific CUDA devices (for multi-GPU)
+        - 'cpu': Use CPU
+        - 'all': Use all available CUDA devices
+        - 'cuda:N' or int N: Use specific CUDA device N
+        - ['cuda:0', 'cuda:2'] or [0, 2]: Use specific CUDA devices in the list.
 
     Returns
     -------
-    torch.device
-        The selected compute device
+    Union[torch.device, list[torch.device]]
+        The selected compute device(s). Returns a list for multi-GPU selection.
     """
-    # Default to CPU
-    if gpu_ids is None:
+    # Case for CPU execution
+    if device == "cpu":
         return torch.device("cpu")
 
-    # Check for CUDA availability
-    if torch.cuda.is_available():
-        if isinstance(gpu_ids, list):
-            # Multi-GPU not yet implemented
-            return torch.device(f"cuda:{gpu_ids[0]}")
-        elif gpu_ids >= 0:
-            return torch.device(f"cuda:{gpu_ids}")
-        else:  # gpu_ids == -1
-            return torch.device("cuda:0")
+    # Case for using all available CUDA devices
+    if device == "all":
+        if not torch.cuda.is_available():
+            raise RuntimeError("No CUDA devices available.")
 
-    # Check for MPS (Apple Silicon) availability
-    elif torch.backends.mps.is_available():
-        if gpu_ids is not None:  # User requested GPU
-            return torch.device("mps")
+        tmp = [torch.device(f"cuda:{i}") for i in range(torch.cuda.device_count())]
 
-    # Fallback to CPU
-    return torch.device("cpu")
+        # NOTE: Multi-gpu execution is not currently supported
+        warnings.warn(MULTI_GPU_WARNING, stacklevel=2)
+        return tmp[0]
 
+    # Case for list of integers
+    if isinstance(device, list) and all(isinstance(d, int) for d in device):
+        tmp = [torch.device(f"cuda:{i}") for i in device]
 
-def move_tensor_to_device(tensor: torch.Tensor, device: torch.device) -> torch.Tensor:
-    """Move a tensor to the specified device if it's not already there."""
-    if tensor.device != device:
-        return tensor.to(device)
-    return tensor
+        # NOTE: Multi-gpu execution is not currently supported
+        warnings.warn(MULTI_GPU_WARNING, stacklevel=2)
+        return tmp[0]
+
+    # Case for list of strings
+    if isinstance(device, list) and all(isinstance(d, str) for d in device):
+        tmp = [torch.device(d) for d in device]
+
+        # NOTE: Multi-gpu execution is not currently supported
+        warnings.warn(MULTI_GPU_WARNING, stacklevel=2)
+        return tmp[0]
+
+    # Case for single integer
+    if isinstance(device, int):
+        return torch.device(f"cuda:{device}")
+
+    # Case for single string
+    if isinstance(device, str):
+        return torch.device(device)
+
+    raise ValueError(
+        f"Invalid device selection: {device}. Use 'cpu', 'all', an int, list of ints, "
+        "or list of device strings"
+    )
 
 
 def select_gpu(

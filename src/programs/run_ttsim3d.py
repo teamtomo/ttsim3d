@@ -1,5 +1,7 @@
 """Simple run script."""
 
+from typing import Union
+
 import click
 
 from ttsim3d.models import Simulator, SimulatorConfig
@@ -118,9 +120,13 @@ from ttsim3d.models import Simulator, SimulatorConfig
 )
 @click.option(
     "--gpu-ids",
-    type=list[int],
+    type=Union[int, list[int], str, list[str]],
     multiple=True,
-    help="A list of GPU IDs to use for the simulation. Currently unused.",
+    help=(
+        "A single integers (e.g. '0') or string (e.g. 'cuda:0') specifying which GPU "
+        "device(s) to use. Also supports lists of integers or strings, but underlying "
+        "computation only runs on a single GPU. 'cpu' will run on the CPU."
+    ),
 )
 def run_simulation_cli(
     pdb_filepath: str,
@@ -138,7 +144,7 @@ def run_simulation_cli(
     dose_end: float,
     apply_dqe: bool,
     mtf_reference: str,
-    gpu_ids: list[int],
+    device: list[int],
 ) -> None:
     """Run a structure simulation through the CLI."""
     simulator_config = SimulatorConfig(

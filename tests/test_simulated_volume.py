@@ -11,6 +11,7 @@ import mrcfile
 import numpy as np
 import pytest
 import requests
+import torch
 from torch_fourier_filter.mtf import read_mtf
 
 from ttsim3d.pdb_handler import load_model, remove_hydrogens
@@ -57,10 +58,6 @@ def download_file(url: str, dest_folder: str) -> str:
 
 def setup_simulation():
     """Download necessary files and setup temporary directory."""
-    # print(this_path)
-    # print(this_dir)
-    # print(tmp_dir)
-
     pdb_filepath = download_file(PDB_STRUCTURE_FILEPATH, tmp_dir)
     mrc_filepath = download_file(SIMULATED_MRC_FILEPATH, tmp_dir)
     dqe_filepath = download_file(DQE_STARFILE_FILEPATH, tmp_dir)
@@ -82,6 +79,7 @@ def get_simulation_kwargs(pdb_filepath: str, dqe_filepath: str) -> dict:
         "dose_filter_modify_signal": "None",
         "dose_filter_critical_bfactor": -1.0,
         "apply_dqe": True,
+        "device": "cuda:0" if torch.cuda.is_available() else "cpu",
     }
 
     # Load in atom data from pdb file
