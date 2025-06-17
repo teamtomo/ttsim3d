@@ -1,11 +1,11 @@
 # Changelog
 
-## [unreleased] -- 16 June 2025
+## [v0.3.0] -- 17 June 2025
 
 ### Modified
 
 - Renamed parameter `gpu_ids` in function `simulate3d` to `device`
-- Device selection now defaults to `"cuda:0"`
+- Device selection now defaults to `"cpu"` with GPUs selectable via integer or string (e.g. `0` or `"cuda:2"`)
 - Connect CLI device selection into the program
 - Connect atom batch size parameter in CLI to simulation program
 

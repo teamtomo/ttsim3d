@@ -260,19 +260,18 @@ class Simulator(BaseModel):
 
     def run(
         self,
-        device: Optional[Union[int, list[int]]] = None,
+        device: Optional[Union[int, list[int], str, list[str]]] = "cpu",
         atom_indices: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Runs the simulation and returns the simulated volume.
 
         Parameters
         ----------
-        device : Optional[Union[int, list[int]]]
-            Device selection:
-            - None: Use CPU
-            - -1: Use first available GPU
-            - >=0: Use specific CUDA device
-            - list[int]: Use specific CUDA devices (future multi-GPU support)
+        device : Optional[Union[int, list[int], str, list[str]]]
+            Parameter to specify which device the simulation should run on. Default
+            is 'cpu' and will run on the CPU. An integer will attempt to specify a GPU
+            device at that index, and a string will be parsed by PyTorch into a device
+            (e.g. 'cuda:0'). Note that multi-GPU support is not yet implemented.
         atom_indices: torch.Tensor
             The indices of the atoms to simulate. The default is 'None' which
             will simulate all atoms in the structure.
@@ -328,7 +327,7 @@ class Simulator(BaseModel):
     def export_to_mrc(
         self,
         mrc_filepath: str | os.PathLike,
-        device: Optional[int | list[int]] = None,
+        device: Optional[Union[int, list[int], str, list[str]]] = "cpu",
         atom_indices: Optional[torch.Tensor] = None,
     ) -> None:
         """Exports the simulated volume to an MRC file.
@@ -337,12 +336,11 @@ class Simulator(BaseModel):
         ----------
         mrc_filepath: str | os.PathLike
             The file path to save the MRC file.
-        device: int | list[int]
-            A list of GPU IDs to use for the simulation. The default is 'None'
-            which will use the CPU. A value of '-1' will use all available
-            GPUs, otherwise a list of integers greater than or equal to 0 are
-            expected. The default is 'None'. This is passed to the `run`
-            method.
+        device : Optional[Union[int, list[int], str, list[str]]]
+            Parameter to specify which device the simulation should run on. Default
+            is 'cpu' and will run on the CPU. An integer will attempt to specify a GPU
+            device at that index, and a string will be parsed by PyTorch into a device
+            (e.g. 'cuda:0'). Note that multi-GPU support is not yet implemented.
         atom_indices: torch.Tensor
             The indices of the atoms to simulate. The default is 'None' which
             will simulate all atoms in the structure. This is passed to the

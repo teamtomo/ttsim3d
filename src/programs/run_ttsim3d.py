@@ -154,7 +154,7 @@ def run_simulation_cli(
     dose_end: float,
     apply_dqe: bool,
     mtf_reference: str,
-    device: list[int],
+    device: Union[int, list[int], str, list[str]],
     atom_batch_size: int,
 ) -> None:
     """Run a structure simulation through the CLI."""
