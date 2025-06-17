@@ -5,6 +5,7 @@ fail and the reference "good" simulated structure will need to be updated.
 """
 
 import os
+import subprocess
 from pathlib import Path
 
 import mrcfile
@@ -18,10 +19,10 @@ from ttsim3d.pdb_handler import load_model, remove_hydrogens
 from ttsim3d.simulate3d import simulate3d
 
 # Remote filepaths for testing
-PDB_STRUCTURE_FILEPATH = "https://zenodo.org/records/14219436/files/parsed_6Q8Y_whole_LSU_match3.pdb?download=1"
-SIMULATED_MRC_FILEPATH = "https://zenodo.org/records/14219436/files/parsed_6Q8Y_whole_LSU_match3_37dff6e22103f08d3453b0163435476c2808d08b.mrc?download=1"
+PDB_STRUCTURE_FILEPATH = "https://zenodo.org/records/15685978/files/parsed_6Q8Y_whole_LSU_match3.pdb?download=1"
+SIMULATED_MRC_FILEPATH = "https://zenodo.org/records/15685978/files/parsed_6Q9Y_whole_LSU_match3_48af52b.mrc?download=1"
 DQE_STARFILE_FILEPATH = (
-    "https://zenodo.org/records/14219436/files/mtf_k2_300kV.star?download=1"
+    "https://zenodo.org/records/15685978/files/mtf_k2_300kV.star?download=1"
 )
 
 
@@ -106,6 +107,20 @@ def is_ci() -> bool:
     return os.environ.get("CI", "false").lower() == "true"
 
 
+def get_git_commit_hash() -> str:
+    """Get the current git commit hash."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return result.stdout.strip()
+    except subprocess.CalledProcessError:
+        return "unknown"
+
+
 @pytest.mark.skipif(
     is_ci(),
     reason="Skip on CI due to memory constraints. Run locally or on large runner only.",
@@ -124,6 +139,12 @@ def test_simulate3d():
     # Run the simulation
     simulated_volume = simulate3d(**simulate3d_kwargs)
     simulated_volume = simulated_volume.cpu().numpy()
+
+    # Save the simulated volume to a temporary file (optional)
+    commit_hash = get_git_commit_hash()
+    tmp_simulated_mrc_path = tmp_dir / f"simulated_volume_{commit_hash}.mrc"
+    with mrcfile.new(tmp_simulated_mrc_path, overwrite=True) as mrc:
+        mrc.set_data(simulated_volume.astype(np.float32))
 
     # Compare the simulated volume to the reference mrc file
     with (

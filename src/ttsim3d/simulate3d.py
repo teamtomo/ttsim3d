@@ -348,6 +348,7 @@ def place_voxel_neighborhoods_in_volume(
 
 def calculate_simulation_dose_filter_3d(
     shape: tuple[int, int, int],
+    pixel_spacing: float,
     dose_start: float,
     dose_end: float,
     critical_bfactor: float,
@@ -362,6 +363,8 @@ def calculate_simulation_dose_filter_3d(
     ----------
     shape : tuple[int, int, int]
         The requested return shape of the dose filter.
+    pixel_spacing : float
+        The pixel spacing for the simulation in Angstroms.
     dose_start : float
         The starting dose for the dose filter in units of e-/A^2.
     dose_end : float
@@ -388,6 +391,7 @@ def calculate_simulation_dose_filter_3d(
     """
     dose_filter = cumulative_dose_filter_3d(
         volume_shape=shape,
+        pixel_size=pixel_spacing,
         start_exposure=dose_start,
         end_exposure=dose_end,
         crit_exposure_bfactor=critical_bfactor,
@@ -412,6 +416,7 @@ def calculate_simulation_dose_filter_3d(
 def apply_simulation_filters(
     upsampled_volume: torch.Tensor,
     actual_upsampling: int,
+    upsampled_pixel_size: float,
     final_shape: tuple[int, int, int],
     apply_dose_weighting: bool,
     dose_start: float,
@@ -436,6 +441,8 @@ def apply_simulation_filters(
         The upsampled volume in Fourier space.
     actual_upsampling : int
         The actual upsampling factor used for the simulation.
+    upsampled_pixel_size : float
+        The pixel spacing for the upsampled volume in Angstroms.
     final_shape : tuple[int, int, int]
         The final shape of the simulated volume.
     apply_dose_weighting : bool
@@ -475,6 +482,7 @@ def apply_simulation_filters(
     if apply_dose_weighting:
         dose_filter = calculate_simulation_dose_filter_3d(
             shape=upsampled_shape,
+            pixel_spacing=upsampled_pixel_size,
             dose_start=dose_start,
             dose_end=dose_end,
             critical_bfactor=dose_filter_critical_bfactor,
@@ -685,6 +693,7 @@ def simulate3d(
     final_volume = apply_simulation_filters(
         upsampled_volume=upsampled_volume,
         actual_upsampling=actual_upsampling,
+        upsampled_pixel_size=setup_results["upsampled_pixel_size"],
         final_shape=sim_volume_shape,
         apply_dose_weighting=apply_dose_weighting,
         dose_start=dose_start,
