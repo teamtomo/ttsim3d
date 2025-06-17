@@ -1,5 +1,6 @@
 """Simulation of 3D volume and associated helper functions."""
 
+import warnings
 from typing import Literal, Union
 
 import einops
@@ -24,6 +25,10 @@ BOND_SCALING_FACTOR = 1.043
 PIXEL_OFFSET = 0.5
 MAX_SIZE = 1536
 ALLOWED_DOSE_FILTER_MODIFICATIONS = ["None", "sqrt", "rel_diff"]
+MULTI_GPU_WARNING = (
+    "Multiple GPU devices were selected, but multi-device execution is not currently "
+    "supported by ttsim3d. Defaulting to the first device in the list..."
+)
 
 
 def _calculate_lead_term(beam_energy_kev: float, sim_pixel_spacing: float) -> float:
@@ -601,6 +606,12 @@ def simulate3d(
     """
     # Get compute device
     device = get_device(device)
+    if isinstance(device, list) and len(device) > 1:
+        warnings.warn(MULTI_GPU_WARNING, stacklevel=2)
+
+    # Use only the first device in the list (single device will return len 1 list)
+    # since code only supports single device execution
+    device = device[0]
 
     # Move input tensors to device
     atom_positions_zyx = atom_positions_zyx.to(device)
