@@ -9,6 +9,10 @@
 - Connect CLI device selection into the program
 - Connect atom batch size parameter in CLI to simulation program
 
+### Fixed
+
+- Fixes bug where pixel size was not being passed down to function simulating the dose weighting filter
+
 ## [v0.2.1] -- 19 January 2025
 
 ### Added
