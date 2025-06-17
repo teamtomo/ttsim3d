@@ -1,6 +1,7 @@
 """Simulation of 3D volume and associated helper functions."""
 
-from typing import Literal, Optional, Union
+import warnings
+from typing import Literal, Union
 
 import einops
 import numpy as np
@@ -9,7 +10,7 @@ from torch_fourier_filter.ctf import calculate_relativistic_electron_wavelength
 from torch_fourier_filter.dose_weight import cumulative_dose_filter_3d
 from torch_fourier_filter.mtf import make_mtf_grid
 
-from ttsim3d.device_handler import calculate_batches, get_device, move_tensor_to_device
+from ttsim3d.device_handler import calculate_batches, get_device
 from ttsim3d.grid_coords import (
     fourier_rescale_3d_force_size,
     get_atom_voxel_indices,
@@ -24,6 +25,10 @@ BOND_SCALING_FACTOR = 1.043
 PIXEL_OFFSET = 0.5
 MAX_SIZE = 1536
 ALLOWED_DOSE_FILTER_MODIFICATIONS = ["None", "sqrt", "rel_diff"]
+MULTI_GPU_WARNING = (
+    "Multiple GPU devices were selected, but multi-device execution is not currently "
+    "supported by ttsim3d. Defaulting to the first device in the list..."
+)
 
 
 def _calculate_lead_term(beam_energy_kev: float, sim_pixel_spacing: float) -> float:
@@ -462,13 +467,6 @@ def apply_simulation_filters(
 
     """
     device = upsampled_volume.device
-    device_mps = device
-    # pytorch does not support mps FFT, so need to move to cpu for mps
-    if device.type == "mps":
-        device = torch.device("cpu")
-        upsampled_volume = move_tensor_to_device(upsampled_volume, device)
-        mtf_amplitudes = move_tensor_to_device(mtf_amplitudes, device)
-        mtf_frequencies = move_tensor_to_device(mtf_frequencies, device)
 
     upsampled_volume_rfft = torch.fft.rfftn(upsampled_volume, dim=(-3, -2, -1))
     upsampled_shape = upsampled_volume.shape
@@ -519,10 +517,6 @@ def apply_simulation_filters(
     # NOTE: ifftshift not needed since volume here was never fftshifted
     # cropped_volume = torch.fft.ifftshift(cropped_volume, dim=(-3, -2, -1))
 
-    # Move back to upsampled volume device if mps
-    if device_mps.type == "mps":
-        cropped_volume = cropped_volume.to(device_mps)
-
     return cropped_volume
 
 
@@ -542,7 +536,7 @@ def simulate3d(
     apply_dqe: bool = False,
     mtf_frequencies: torch.Tensor = None,
     mtf_amplitudes: torch.Tensor = None,
-    gpu_ids: Optional[Union[int, list[int]]] = None,
+    device: Union[int, str, list[int], list[str]] = "cuda:0",
     atom_batch_size: int = 16384,  # 2^14
 ) -> torch.Tensor:
     """Simulate 3D electron scattering volume with requested parameters.
@@ -595,12 +589,15 @@ def simulate3d(
         The amplitudes for the modulation transfer function (MTF) filter at the
         corresponding frequencies. Must be the same length as
         'mtf_frequencies'. Required if 'apply_dqe' is True.
-    gpu_ids : Optional[Union[int, list[int]]]
-        Device selection:
-        - None: Use CPU
-        - -1: Use first available GPU
-        - >=0: Use specific CUDA device
-        - list[int]: Use specific CUDA devices (future multi-GPU support)
+    device : Optional[Union[int, str, list[int], list[str]]]
+        The device to run the simulation on. Default is "cuda:0", but other possible
+        values include "cpu" for CPU execution or integer "0" which will use the
+        first available CUDA device. NOTE: If a list of devices is provided,
+        then only the first device in the list will be used.
+    atom_batch_size : int
+        The number of atoms to process (simulate the scattering potentials of) at a
+        single time. This is partially controls the memory usage. If -1, the batch size
+        calculated automatically. Default is 16384 (2^14).
 
     Returns
     -------
@@ -608,15 +605,21 @@ def simulate3d(
         The simulated 3D volume in real space.
     """
     # Get compute device
-    device = get_device(gpu_ids)
+    device = get_device(device)
+    if isinstance(device, list) and len(device) > 1:
+        warnings.warn(MULTI_GPU_WARNING, stacklevel=2)
+
+    # Use only the first device in the list (single device will return len 1 list)
+    # since code only supports single device execution
+    device = device[0]
 
     # Move input tensors to device
-    atom_positions_zyx = move_tensor_to_device(atom_positions_zyx, device)
-    atom_b_factors = move_tensor_to_device(atom_b_factors, device)
+    atom_positions_zyx = atom_positions_zyx.to(device)
+    atom_b_factors = atom_b_factors.to(device)
     if mtf_frequencies is not None:
-        mtf_frequencies = move_tensor_to_device(mtf_frequencies, device)
+        mtf_frequencies = mtf_frequencies.to(device)
     if mtf_amplitudes is not None:
-        mtf_amplitudes = move_tensor_to_device(mtf_amplitudes, device)
+        mtf_amplitudes = mtf_amplitudes.to(device)
 
     # Validate portions of the input before continuing
     _validate_dose_filter_inputs(
@@ -644,7 +647,9 @@ def simulate3d(
 
     # Only do automatic batch calculation if atom_batch_size is -1
     if atom_batch_size == -1:
-        num_batches, atoms_per_batch = calculate_batches(setup_results, upsampled_volume)
+        num_batches, atoms_per_batch = calculate_batches(
+            setup_results, upsampled_volume
+        )
     else:
         atoms_per_batch = atom_batch_size
         num_batches = atom_positions_zyx.shape[0] // atoms_per_batch + 1

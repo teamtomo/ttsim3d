@@ -1,5 +1,7 @@
 """Simple run script."""
 
+from typing import Union
+
 import click
 
 from ttsim3d.models import Simulator, SimulatorConfig
@@ -118,9 +120,23 @@ from ttsim3d.models import Simulator, SimulatorConfig
 )
 @click.option(
     "--gpu-ids",
-    type=list[int],
+    type=Union[int, list[int], str, list[str]],
     multiple=True,
-    help="A list of GPU IDs to use for the simulation. Currently unused.",
+    help=(
+        "A single integers (e.g. '0') or string (e.g. 'cuda:0') specifying which GPU "
+        "device(s) to use. Also supports lists of integers or strings, but underlying "
+        "computation only runs on a single GPU. 'cpu' will run on the CPU."
+    ),
+)
+@click.option(
+    "--atom-batch-size",
+    type=int,
+    default=16384,
+    help=(
+        "The number of atoms to process (simulate the scattering potentials of) at a "
+        "single time. This is partially controls the memory usage. If -1, the batch "
+        "size calculated automatically. Default is 16384 (2^14)."
+    ),
 )
 def run_simulation_cli(
     pdb_filepath: str,
@@ -138,7 +154,8 @@ def run_simulation_cli(
     dose_end: float,
     apply_dqe: bool,
     mtf_reference: str,
-    gpu_ids: list[int],
+    device: list[int],
+    atom_batch_size: int,
 ) -> None:
     """Run a structure simulation through the CLI."""
     simulator_config = SimulatorConfig(
@@ -151,6 +168,7 @@ def run_simulation_cli(
         apply_dqe=apply_dqe,
         mtf_reference=mtf_reference,
         upsampling=upsampling,
+        atom_batch_size=atom_batch_size,
     )
     simulator = Simulator(
         pixel_spacing=pixel_spacing,
@@ -160,7 +178,7 @@ def run_simulation_cli(
         additional_b_factor=additional_b_factor,
         simulator_config=simulator_config,
     )
-    simulator.export_to_mrc(mrc_filepath=mrc_filepath)
+    simulator.export_to_mrc(device=device, mrc_filepath=mrc_filepath)
 
 
 if __name__ == "__main__":
