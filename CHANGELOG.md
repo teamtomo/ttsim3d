@@ -1,5 +1,10 @@
 # Changelog
 
+## [unreleased] -- 14 August 2025
+### Added
+- `metadata_handler.py`: new module housing `make_metadata_file` function.
+- `make_metadata_file`: utility to generate metadata with simulated volumes
+
 ## [v0.3.0] -- 17 June 2025
 
 ### Modified

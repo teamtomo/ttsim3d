@@ -15,6 +15,7 @@ from pydantic.json_schema import SkipJsonSchema
 from torch_fourier_filter.mtf import read_mtf
 
 from ttsim3d.mrc_handler import tensor_to_mrc
+from ttsim3d.metadata_handler import make_metadata_file
 from ttsim3d.pdb_handler import load_model, remove_hydrogens
 from ttsim3d.simulate3d import ALLOWED_DOSE_FILTER_MODIFICATIONS, simulate3d
 
@@ -329,6 +330,7 @@ class Simulator(BaseModel):
         mrc_filepath: str | os.PathLike,
         device: Optional[Union[int, list[int], str, list[str]]] = "cpu",
         atom_indices: Optional[torch.Tensor] = None,
+        metadata: Optional[bool] = False,
     ) -> None:
         """Exports the simulated volume to an MRC file.
 
@@ -345,13 +347,29 @@ class Simulator(BaseModel):
             The indices of the atoms to simulate. The default is 'None' which
             will simulate all atoms in the structure. This is passed to the
             `run` method.
+        metadata_file: bool
+            whether or not to create a metadata file in the same location as the final 
+            MRC file
 
         Returns
         -------
         None
         """
         volume = self.run(device=device, atom_indices=atom_indices)
-
+        if metadata:
+            make_metadata_file(
+                mrc_filepath=mrc_filepath,
+                pdb_filepath=self.pdb_filepath,
+                added_b=self.additional_b_factor,
+                upsampling=self.simulator_config.upsampling,
+                scaled_b=self.b_factor_scaling,
+                pixel_size=self.pixel_spacing,
+                volume_size=self.volume_shape,
+                centered=self.center_atoms,
+                dose_start=self.simulator_config.dose_start,
+                dose_end=self.simulator_config.dose_end,
+                voltage=self.simulator_config.voltage
+            )
         tensor_to_mrc(
             output_filename=str(mrc_filepath),
             final_volume=volume,
