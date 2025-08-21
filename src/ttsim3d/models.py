@@ -123,6 +123,7 @@ class SimulatorConfig(BaseModel):
         if not _path_exists and not _is_default:
             e = f"Invalid MTF reference file: {v}. "
             e += "Please provide a valid path to an MTF reference file."
+            e += f"Or use a known reference: {list(DEFAULT_MTF_REFERENCES.keys())}"
             raise ValueError(e)
 
         if _is_default:
