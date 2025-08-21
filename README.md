@@ -99,3 +99,44 @@ print(volume.shape)  # (256, 256, 256)
 mrc_filepath = "some/path/to/simulated_structure/mrc"
 sim.export_to_mrc(mrc_filepath)
 ```
+
+### Working with configuration files
+
+Simulation configurations can be saved to disk as either a YAML or JSON file by using the `to_yaml` or `to_json` methods of the `Simulator` class, respectively.
+Assuming the same `sim` object defined as above, you can export the configuration to a YAML file like this:
+```python
+sim.to_yaml("some/path/to/simulation_config.yaml")
+```
+
+The contents of the YAML file will look something like this:
+```yaml
+additional_b_factor: 15.0
+b_factor_scaling: 1.0
+center_atoms: true
+pdb_filepath: some/path/to/structure.pdb
+pixel_spacing: 1.25
+remove_hydrogens: true
+volume_shape:
+- 256
+- 256
+- 256
+simulator_config:
+  apply_dose_weighting: true
+  apply_dqe: true
+  atom_batch_size: 16384
+  crit_exposure_bfactor: -1
+  dose_end: 35.0
+  dose_filter_modify_signal: None
+  dose_start: 0.0
+  mtf_reference: k2_300kv
+  store_volume: true
+  upsampling: -1
+  voltage: 300.0
+```
+
+Similarly, you can load in a configuration from a YAML file by using the `from_yaml` class method of the `Simulator` class:
+```python
+from ttsim3d.models import Simulator
+
+sim = Simulator.from_yaml("some/path/to/simulation_config.yaml")
+```

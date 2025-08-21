@@ -47,6 +47,7 @@ dependencies = [
     "pydantic",
     "click",
     "psutil",
+    "teamtomo-basemodel @ git+https://github.com/teamtomo/teamtomo-basemodel@main"
 ]
 
 [tool.hatch.metadata]

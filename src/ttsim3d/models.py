@@ -5,13 +5,9 @@ import pathlib
 from typing import Annotated, Any, Optional, Union
 
 import torch
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    field_validator,
-)
+from pydantic import ConfigDict, Field, field_serializer, field_validator
 from pydantic.json_schema import SkipJsonSchema
+from teamtomo_basemodel import BaseModelTeamTomo
 from torch_fourier_filter.mtf import read_mtf
 
 from ttsim3d.mrc_handler import tensor_to_mrc
@@ -39,7 +35,7 @@ ExcludedTensor = SkipJsonSchema[
 ]
 
 
-class SimulatorConfig(BaseModel):
+class SimulatorConfig(BaseModelTeamTomo):
     """Configuration for simulating a 3D volume.
 
     These simulation parameters are intended to be model agnostic, that is,
@@ -138,7 +134,7 @@ class SimulatorConfig(BaseModel):
         return frequencies, amplitudes
 
 
-class Simulator(BaseModel):
+class Simulator(BaseModelTeamTomo):
     """Class for simulating a 3D volume from a atomistic structure.
 
     Attributes
@@ -202,7 +198,7 @@ class Simulator(BaseModel):
         400,
         400,
     )
-    pdb_filepath: Annotated[pathlib.Path, Field(...)]
+    pdb_filepath: Annotated[Union[pathlib.Path, str], Field(...)]
     center_atoms: Annotated[bool, Field(default=True)] = True
     remove_hydrogens: Annotated[bool, Field(default=True)] = True
     b_factor_scaling: Annotated[float, Field(default=1.0)] = 1.0
@@ -214,6 +210,11 @@ class Simulator(BaseModel):
     atom_identities: ExcludedTensor  # type: ignore
     atom_b_factors: ExcludedTensor  # type: ignore
     volume: ExcludedTensor  # type: ignore
+
+    @field_serializer("volume_shape")  # type: ignore[misc]
+    def serialize_volume_shape(self, value: tuple[int, int, int]) -> list[int]:
+        """Serialize volume_shape as a list instead of tuple for cleaner YAML output."""
+        return list(value)
 
     def __init__(self, **data: Any) -> None:
         super().__init__(**data)
