@@ -39,6 +39,11 @@ ExcludedTensor = SkipJsonSchema[
 ]
 
 
+def included_mtf_references() -> list[str]:
+    """Returns a list of available MTF reference names."""
+    return list(DEFAULT_MTF_REFERENCES.keys())
+
+
 class SimulatorConfig(BaseModel):
     """Configuration for simulating a 3D volume.
 
@@ -123,6 +128,7 @@ class SimulatorConfig(BaseModel):
         if not _path_exists and not _is_default:
             e = f"Invalid MTF reference file: {v}. "
             e += "Please provide a valid path to an MTF reference file."
+            e += f"Or use a known reference: {list(DEFAULT_MTF_REFERENCES.keys())}"
             raise ValueError(e)
 
         if _is_default:

@@ -119,13 +119,13 @@ from ttsim3d.models import Simulator, SimulatorConfig
     ),
 )
 @click.option(
-    "--gpu-ids",
-    type=Union[int, list[int], str, list[str]],
-    multiple=True,
+    "--device",
+    type=str,
+    default="cpu",
     help=(
-        "A single integers (e.g. '0') or string (e.g. 'cuda:0') specifying which GPU "
-        "device(s) to use. Also supports lists of integers or strings, but underlying "
-        "computation only runs on a single GPU. 'cpu' will run on the CPU."
+        "A single integer or string specifying the GPU device to use (e.g., '0' or "
+        "'cuda:0' to select the zeroth GPU). A value of 'cpu' will run on the CPU. "
+        "The default is 'cpu'. Multiple GPU devices are not currently supported."
     ),
 )
 @click.option(
