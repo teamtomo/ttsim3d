@@ -111,7 +111,7 @@ from ttsim3d.models import Simulator, SimulatorConfig
 @click.option(
     "--mtf-reference",
     type=str,
-    default="k2_300kV_FL2",
+    default="k2_300kV",
     help=(
         "Path to the modulation transfer function (MTF) reference star "
         "file, or one of the known MTF reference files. "

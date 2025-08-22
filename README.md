@@ -120,3 +120,19 @@ volume_gpu = sim.run(device="cuda:0")
 # Same argument can be passed to the `export_to_mrc` method
 sim.export_to_mrc(mrc_filepath, device="cuda:0")
 ```
+
+## Included MTF reference files
+
+Users can specify MTF reference by a path to a star file under the `SimulatorConfig.mtf_reference` parameter.
+Applying a DQE filter during simulation can be turned on or off by the `SimulatorConfig.apply_dqe` parameter.
+
+The `ttsim3d` package includes several common MTF reference files which are accessible by a string rather than a path.
+To see the list of included MTF reference files, run the following code snippet:
+
+```python
+from ttsim3d import models
+
+print(models.included_mtf_references())
+```
+
+The default MTF reference is `"k2_300kV"`, which corresponds to the MTF of a Gatan K2 camera at 300 kV.
