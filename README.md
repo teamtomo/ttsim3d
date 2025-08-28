@@ -40,7 +40,7 @@ All options for the program can be printed by running:
 ttsim3d-cli --help
 ```
 
-The following are descriptions of each of the options for the program
+<!-- The following are descriptions of each of the options for the program
 
 
 | Option                        | Type                                  | Default       | Description                                                                                                                                                       |
@@ -60,14 +60,14 @@ The following are descriptions of each of the options for the program
 | `--dose-end`                  | float                                 | `30.0`        | The ending dose in e/A^2.
 | `--apply-dqe`                 | bool                                  | `True`        | If True, apply a DQE filter to the simulation.
 | `--mtf-reference`             | Path or str                           | `"k2_300kV"`  | Path to the modulation transfer function (MTF) reference star file, or one of the known MTF reference files. Default is 'k2_300kV'.
-| `--gpu-ids`                   | list[int]                             | unused        | A list of GPU IDs to use for the simulation. Currently unused.
+| `--device`                   | str                             | `"cpu"`        | The device to use for the simulation (e.g., "cpu" for CPU computation, or "cuda:0" or "0" for GPU computation on the zeroth device). -->
 
 ## Python objects
 
 There are two user-facing classes in `ttsim3d` built upon Pydantic models for validating inputs and simulating a volume.
 The first class, `ttsim3d.models.Simulator`, holds reference to a PDB file and basic simulation parameters related to that structure.
 The second class, `ttsim3d.models.SimulatorConfig` is used to configure more advanced options, such as dose weighting and simulation upsampling.
-An extremely basic use of these objects to run a simulation looks like
+An basic use of these objects to run a simulation looks like
 ```python
 from ttsim3d.models import Simulator, SimulatorConfig
 
@@ -98,6 +98,27 @@ print(volume.shape)  # (256, 256, 256)
 # OR export the simulation to a mrc file
 mrc_filepath = "some/path/to/simulated_structure/mrc"
 sim.export_to_mrc(mrc_filepath)
+```
+
+### Running on GPU or CPU
+
+The `ttsim3d` package supports GPU accelerated simulations with PyTorch.
+Use the `device` argument to specify which device to run the simulation on.
+
+```python
+# ...
+# Assume same objects as above
+
+# Run on the CPU
+volume_cpu = sim.run(device="cpu")
+
+# Run on the GPU (assumes CUDA is available)
+# Both run on the zeroth GPU device
+volume_gpu = sim.run(device="0")
+volume_gpu = sim.run(device="cuda:0")
+
+# Same argument can be passed to the `export_to_mrc` method
+sim.export_to_mrc(mrc_filepath, device="cuda:0")
 ```
 
 ### Working with configuration files
@@ -140,3 +161,19 @@ from ttsim3d.models import Simulator
 
 sim = Simulator.from_yaml("some/path/to/simulation_config.yaml")
 ```
+
+## Included MTF reference files
+
+Users can specify MTF reference by a path to a star file under the `SimulatorConfig.mtf_reference` parameter.
+Applying a DQE filter during simulation can be turned on or off by the `SimulatorConfig.apply_dqe` parameter.
+
+The `ttsim3d` package includes several common MTF reference files which are accessible by a string rather than a path.
+To see the list of included MTF reference files, run the following code snippet:
+
+```python
+from ttsim3d import models
+
+print(models.included_mtf_references())
+```
+
+The default MTF reference is `"k2_300kV"`, which corresponds to the MTF of a Gatan K2 camera at 300 kV.
