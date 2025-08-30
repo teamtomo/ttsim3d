@@ -27,6 +27,8 @@ DEFAULT_MTF_REFERENCES = {
     "k2_300kV_FL2": str(_data_dir / "mtf_k2_300kV_FL2.star"),
     "k3_200kV_FL2": str(_data_dir / "mtf_k3_standard_200kV_FL2.star"),
     "k3_300kV_FL2": str(_data_dir / "mtf_k3_standard_300kV_FL2.star"),
+    "k3_200kV_CDS": str(_data_dir / "mtf_k3_CDS_200kV_FL2.star"),
+    "k3_300kV_CDS": str(_data_dir / "mtf_k3_CDS_300kV_FL1.star"),
 }
 
 # Pydantic type annotation for large tensor excluded from JSON schema and dump
