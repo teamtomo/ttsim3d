@@ -2,7 +2,7 @@
 
 import os
 import pathlib
-from typing import Annotated, Any, Optional, Union
+from typing import Annotated, Any, Literal, Optional, Union
 
 import torch
 from pydantic import ConfigDict, Field, field_serializer, field_validator
@@ -27,6 +27,8 @@ DEFAULT_MTF_REFERENCES = {
     "k2_300kV_FL2": str(_data_dir / "mtf_k2_300kV_FL2.star"),
     "k3_200kV_FL2": str(_data_dir / "mtf_k3_standard_200kV_FL2.star"),
     "k3_300kV_FL2": str(_data_dir / "mtf_k3_standard_300kV_FL2.star"),
+    "k3_200kV_CDS": str(_data_dir / "mtf_k3_CDS_200kV_FL2.star"),
+    "k3_300kV_CDS": str(_data_dir / "mtf_k3_CDS_300kV_FL1.star"),
 }
 
 # Pydantic type annotation for large tensor excluded from JSON schema and dump
@@ -97,7 +99,7 @@ class SimulatorConfig(BaseModelTeamTomo):
     voltage: Annotated[float, Field(ge=0.0)] = 300.0
     apply_dose_weighting: Annotated[bool, Field(default=True)] = True
     crit_exposure_bfactor: float | int = -1
-    dose_filter_modify_signal: str = "None"
+    dose_filter_modify_signal: Literal["None", "sqrt", "rel_diff"] = "None"
     dose_start: Annotated[float, Field(ge=0.0)] = 0.0
     dose_end: Annotated[float, Field(ge=0.0)] = 30.0
     apply_dqe: bool = True
@@ -212,12 +214,12 @@ class Simulator(BaseModelTeamTomo):
     simulator_config: SimulatorConfig
 
     # Non-serializable and schema-excluded attributes
-    atom_positions_zyx: ExcludedTensor  # type: ignore
-    atom_identities: ExcludedTensor  # type: ignore
-    atom_b_factors: ExcludedTensor  # type: ignore
-    volume: ExcludedTensor  # type: ignore
+    atom_positions_zyx: ExcludedTensor
+    atom_identities: ExcludedTensor
+    atom_b_factors: ExcludedTensor
+    volume: ExcludedTensor
 
-    @field_serializer("volume_shape")  # type: ignore[misc]
+    @field_serializer("volume_shape")
     def serialize_volume_shape(self, value: tuple[int, int, int]) -> list[int]:
         """Serialize volume_shape as a list instead of tuple for cleaner YAML output."""
         return list(value)
@@ -267,14 +269,14 @@ class Simulator(BaseModelTeamTomo):
 
     def run(
         self,
-        device: Optional[Union[int, list[int], str, list[str]]] = "cpu",
+        device: Union[int, list[int], str, list[str]] = "cpu",
         atom_indices: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Runs the simulation and returns the simulated volume.
 
         Parameters
         ----------
-        device : Optional[Union[int, list[int], str, list[str]]]
+        device : Union[int, list[int], str, list[str]]
             Parameter to specify which device the simulation should run on. Default
             is 'cpu' and will run on the CPU. An integer will attempt to specify a GPU
             device at that index, and a string will be parsed by PyTorch into a device
@@ -334,7 +336,7 @@ class Simulator(BaseModelTeamTomo):
     def export_to_mrc(
         self,
         mrc_filepath: str | os.PathLike,
-        device: Optional[Union[int, list[int], str, list[str]]] = "cpu",
+        device: Union[int, list[int], str, list[str]] = "cpu",
         atom_indices: Optional[torch.Tensor] = None,
     ) -> None:
         """Exports the simulated volume to an MRC file.
@@ -343,7 +345,7 @@ class Simulator(BaseModelTeamTomo):
         ----------
         mrc_filepath: str | os.PathLike
             The file path to save the MRC file.
-        device : Optional[Union[int, list[int], str, list[str]]]
+        device : Union[int, list[int], str, list[str]]
             Parameter to specify which device the simulation should run on. Default
             is 'cpu' and will run on the CPU. An integer will attempt to specify a GPU
             device at that index, and a string will be parsed by PyTorch into a device
