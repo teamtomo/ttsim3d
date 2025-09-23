@@ -1,6 +1,6 @@
 # Changelog
 
-## [v0.3.0] -- 17 June 2025
+## [v0.4.0] -- 17 June 2025
 
 ### Modified
 
@@ -12,6 +12,8 @@
 ### Fixed
 
 - Fixes bug where pixel size was not being passed down to function simulating the dose weighting filter
+
+## [v0.3.0-v0.3.2] -- 16 May 2025
 
 ## [v0.2.1] -- 19 January 2025
 
