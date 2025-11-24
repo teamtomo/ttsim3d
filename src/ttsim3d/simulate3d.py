@@ -529,20 +529,12 @@ def apply_simulation_filters(
         upsampled_volume_rfft *= mtf
 
     # Inverse FFT
-    if actual_upsampling != 1:
-        cropped_volume = torch.fft.irfftn(
-            upsampled_volume_rfft,
-            s=new_shape,
-            dim=(-3, -2, -1),
-            norm="forward",
-        )
-        cropped_volume = cropped_volume * (1 / np.prod(upsampled_shape))
-    else:
-        cropped_volume = torch.fft.irfftn(
-            upsampled_volume_rfft,
-            s=new_shape,
-            dim=(-3, -2, -1),
-        )
+    # The mean is not preserved when upsampling, so we undo it here.
+    cropped_volume = torch.fft.irfftn(
+        upsampled_volume_rfft,
+        s=new_shape,
+        dim=(-3, -2, -1),
+    )
     # ifft shift back to center the volume
     cropped_volume = torch.fft.ifftshift(cropped_volume, dim=(-3, -2, -1))
 
