@@ -9,6 +9,7 @@ from pydantic import ConfigDict, Field, field_serializer, field_validator
 from pydantic.json_schema import SkipJsonSchema
 from teamtomo_basemodel import BaseModelTeamTomo
 from torch_fourier_filter.mtf import read_mtf
+from torch_structure_manipulation import load_model_bonds
 
 from ttsim3d.mrc_handler import tensor_to_mrc
 from ttsim3d.pdb_handler import load_model, remove_hydrogens
@@ -87,6 +88,10 @@ class SimulatorConfig(BaseModelTeamTomo):
     atom_batch_size : int
         The number of atoms to simulate in a single batch. The default is 16384
         (2^14).
+    use_bonded_scattering_factors : bool
+        If True, use bonded scattering factors instead of standard scattering
+        factors. This requires loading the model with bond information using
+        `load_model_bonds`. Default is False.
 
     Methods
     -------
@@ -107,6 +112,7 @@ class SimulatorConfig(BaseModelTeamTomo):
     upsampling: int = -1
     store_volume: bool = True
     atom_batch_size: int = 16384  # 2^14
+    use_bonded_scattering_factors: Annotated[bool, Field(default=False)] = False
 
     @field_validator("dose_filter_modify_signal")  # type: ignore
     def validate_dose_filter_modify_signal(cls, v):
@@ -176,6 +182,12 @@ class Simulator(BaseModelTeamTomo):
     atom_b_factors : torch.Tensor
         The B-factors (float tensor) of the atoms in the structure in units of
         A^2. Non-serializable attribute.
+    atom_bonded_ids : list[str]
+        The bonded atom IDs (e.g., "C(HHCN)") for each atom. Only populated
+        when `use_bonded_scattering_factors` is True. Non-serializable attribute.
+    molecule_type : list[str]
+        The molecule types (e.g., ["protein", "rna"]). Only populated
+        when `use_bonded_scattering_factors` is True. Non-serializable attribute.
     volume : torch.Tensor
         The simulated volume in real space after requested simulation filters
         are applied. Non-serializable attribute. Only stored if requested in
@@ -217,6 +229,8 @@ class Simulator(BaseModelTeamTomo):
     atom_positions_zyx: ExcludedTensor
     atom_identities: ExcludedTensor
     atom_b_factors: ExcludedTensor
+    atom_bonded_ids: Optional[list[str]] = None
+    molecule_type: Optional[list[str]] = None
     volume: ExcludedTensor
 
     @field_serializer("volume_shape")
@@ -231,17 +245,54 @@ class Simulator(BaseModelTeamTomo):
 
     def load_atoms_from_pdb_model(self) -> None:
         """Loads the structure atoms from held pdb file."""
-        atom_positions_zyx, atom_ids, atom_b_factors = load_model(
-            self.pdb_filepath, self.center_atoms
-        )
-        if self.remove_hydrogens:
-            atom_positions_zyx, atom_ids, atom_b_factors = remove_hydrogens(
-                atom_positions_zyx, atom_ids, atom_b_factors
+        if self.simulator_config.use_bonded_scattering_factors:
+            # Use load_model_bonds to get bonded atom information
+            (
+                atom_positions_zyx,
+                atom_ids,
+                atom_b_factors,
+                atom_bonded_ids,
+                molecule_type,
+            ) = load_model_bonds(
+                self.pdb_filepath,
+                center_atoms=self.center_atoms,
+                include_hydrogens=not self.remove_hydrogens,
             )
 
-        self.atom_positions_zyx = atom_positions_zyx
-        self.atom_identities = atom_ids
-        self.atom_b_factors = atom_b_factors
+            # Remove hydrogens if requested (in case they were included)
+            if self.remove_hydrogens:
+                # Create mask before filtering
+                non_h_mask = [aid != "H" for aid in atom_ids]
+                atom_positions_zyx, atom_ids, atom_b_factors = remove_hydrogens(
+                    atom_positions_zyx, atom_ids, atom_b_factors
+                )
+                # Filter bonded_ids using the same mask
+                atom_bonded_ids = [
+                    bonded_id
+                    for i, bonded_id in enumerate(atom_bonded_ids)
+                    if non_h_mask[i]
+                ]
+
+            self.atom_positions_zyx = atom_positions_zyx
+            self.atom_identities = atom_ids
+            self.atom_b_factors = atom_b_factors
+            self.atom_bonded_ids = atom_bonded_ids
+            self.molecule_type = molecule_type
+        else:
+            # Use standard load_model
+            atom_positions_zyx, atom_ids, atom_b_factors = load_model(
+                self.pdb_filepath, self.center_atoms
+            )
+            if self.remove_hydrogens:
+                atom_positions_zyx, atom_ids, atom_b_factors = remove_hydrogens(
+                    atom_positions_zyx, atom_ids, atom_b_factors
+                )
+
+            self.atom_positions_zyx = atom_positions_zyx
+            self.atom_identities = atom_ids
+            self.atom_b_factors = atom_b_factors
+            self.atom_bonded_ids = None
+            self.molecule_type = None
 
     def get_scale_atom_b_factors(self) -> torch.Tensor:
         """Returns b-factors transformed by the scale and additional b-factor.
@@ -300,10 +351,22 @@ class Simulator(BaseModelTeamTomo):
         if atom_indices is None:
             atom_indices = torch.arange(self.atom_positions_zyx.size(0))
             atom_ids = self.atom_identities
+            # Get bonded_ids for selected atoms if available
+            selected_bonded_ids = self.atom_bonded_ids
         else:
-            atom_ids = [
-                atom for i, atom in enumerate(self.atom_identities) if i in atom_indices
-            ]
+            # Convert atom_indices to list for easier indexing
+            if isinstance(atom_indices, torch.Tensor):
+                atom_indices_list = atom_indices.tolist()
+            else:
+                atom_indices_list = list(atom_indices)
+            atom_ids = [self.atom_identities[i] for i in atom_indices_list]
+            # Get bonded_ids for selected atoms if available
+            if self.atom_bonded_ids is not None:
+                selected_bonded_ids = [
+                    self.atom_bonded_ids[i] for i in atom_indices_list
+                ]
+            else:
+                selected_bonded_ids = None
 
         # Calculate the mtf_frequencies and mtf_amplitudes from reference file
         mtf_frequencies, mtf_amplitudes = self.simulator_config.mtf_tensors
@@ -326,6 +389,8 @@ class Simulator(BaseModelTeamTomo):
             mtf_amplitudes=mtf_amplitudes,
             device=device,
             atom_batch_size=self.simulator_config.atom_batch_size,
+            atom_bonded_ids=selected_bonded_ids,
+            molecule_type=self.molecule_type,
         )
 
         if self.simulator_config.store_volume:

@@ -1,5 +1,9 @@
 [files]
-extend-exclude = ["src/ttsim3d/elastic_scattering_factors.json"]
+extend-exclude = [
+    "src/ttsim3d/elastic_scattering_factors.json",
+    "src/ttsim3d/elastic_scattering_bonding_protein.json",
+    "src/ttsim3d/elastic_scattering_bonding_rna.json",
+]
 
 [default.dictionary]
 terms = [

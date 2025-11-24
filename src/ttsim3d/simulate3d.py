@@ -249,6 +249,8 @@ def simulate_atomwise_scattering_potentials(
     atom_dds: torch.Tensor,
     voxel_offsets_flat: torch.Tensor,
     upsampled_pixel_size: float,
+    atom_bonded_ids: list[str] | None = None,
+    molecule_type: list[str] | None = None,
 ) -> torch.Tensor:
     """Simulates the scattering potentials for each atom around its neighborhood.
 
@@ -268,8 +270,14 @@ def simulate_atomwise_scattering_potentials(
         The voxel offsets for the neighborhood around the atom voxel.
     upsampled_pixel_size : float
         The upsampled pixel size in Angstroms.
+    atom_bonded_ids : list[str] | None
+        Bonded atom IDs (e.g., "C(HHCN)") for each atom. If None, uses standard
+        scattering factors. Default is None.
+    molecule_type : list[str] | None
+        Molecule types (e.g., ["protein", "rna"]). Used to select which bonded
+        scattering factors to use. Default is None.
 
-    Returnss
+    Returns
     -------
     dict
         A dictionary containing the neighborhood potentials and voxel positions.
@@ -298,6 +306,8 @@ def simulate_atomwise_scattering_potentials(
         atom_ids=atom_ids,
         atom_b_factors=atom_b_factors,
         lead_term=lead_term,
+        atom_bonded_ids=atom_bonded_ids,
+        molecule_type=molecule_type,
     )
 
     return {
@@ -547,6 +557,8 @@ def simulate3d(
     mtf_amplitudes: torch.Tensor = None,
     device: Union[int, str, list[int], list[str]] = "cuda:0",
     atom_batch_size: int = 16384,  # 2^14
+    atom_bonded_ids: list[str] | None = None,
+    molecule_type: list[str] | None = None,
 ) -> torch.Tensor:
     """Simulate 3D electron scattering volume with requested parameters.
 
@@ -607,6 +619,12 @@ def simulate3d(
         The number of atoms to process (simulate the scattering potentials of) at a
         single time. This is partially controls the memory usage. If -1, the batch size
         calculated automatically. Default is 16384 (2^14).
+    atom_bonded_ids : list[str] | None
+        Bonded atom IDs (e.g., "C(HHCN)") for each atom. If None, uses standard
+        scattering factors. Default is None.
+    molecule_type : list[str] | None
+        Molecule types (e.g., ["protein", "rna"]). Used to select which bonded
+        scattering factors to use. Default is None.
 
     Returns
     -------
@@ -670,6 +688,11 @@ def simulate3d(
         )
 
         # Process a batch of atoms
+        # Get bonded_ids for this batch if available
+        batch_bonded_ids = (
+            atom_bonded_ids[start_idx:end_idx] if atom_bonded_ids is not None else None
+        )
+
         scattering_results = simulate_atomwise_scattering_potentials(
             atom_ids=atom_ids[start_idx:end_idx],
             atom_b_factors=atom_b_factors[start_idx:end_idx],
@@ -678,6 +701,8 @@ def simulate3d(
             atom_dds=setup_results["atom_dds"][start_idx:end_idx],
             voxel_offsets_flat=setup_results["voxel_offsets_flat"],
             upsampled_pixel_size=setup_results["upsampled_pixel_size"],
+            atom_bonded_ids=batch_bonded_ids,
+            molecule_type=molecule_type,
         )
 
         neighborhood_potentials = scattering_results["neighborhood_potentials"]

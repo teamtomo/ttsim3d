@@ -51,6 +51,7 @@ dependencies = [
     "click",
     "psutil",
     "teamtomo-basemodel",
+    "torch-structure-manipulation",
 ]
 
 [tool.hatch.metadata]
