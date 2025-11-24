@@ -322,7 +322,7 @@ class Simulator(BaseModelTeamTomo):
         self,
         device: Union[int, list[int], str, list[str]] = "cpu",
         atom_indices: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, float]:
         """Runs the simulation and returns the simulated volume.
 
         Parameters
@@ -340,6 +340,8 @@ class Simulator(BaseModelTeamTomo):
         -------
         volume: torch.Tensor
             The simulated volume.
+        new_spacing: float
+            The new pixel spacing of the simulated volume.
         """
         assert self.atom_positions_zyx is not None, "No atom positions loaded."
         assert self.atom_identities is not None, "No atom identities loaded."
@@ -371,7 +373,7 @@ class Simulator(BaseModelTeamTomo):
         # Calculate the mtf_frequencies and mtf_amplitudes from reference file
         mtf_frequencies, mtf_amplitudes = self.simulator_config.mtf_tensors
 
-        volume = simulate3d(
+        volume, new_spacing = simulate3d(
             atom_positions_zyx=self.atom_positions_zyx[atom_indices],
             atom_ids=atom_ids,
             atom_b_factors=atom_b_factors[atom_indices],
@@ -396,7 +398,7 @@ class Simulator(BaseModelTeamTomo):
         if self.simulator_config.store_volume:
             self.volume = volume
 
-        return volume
+        return volume, new_spacing
 
     def export_to_mrc(
         self,
@@ -424,10 +426,10 @@ class Simulator(BaseModelTeamTomo):
         -------
         None
         """
-        volume = self.run(device=device, atom_indices=atom_indices)
+        volume, new_spacing = self.run(device=device, atom_indices=atom_indices)
 
         tensor_to_mrc(
             output_filename=str(mrc_filepath),
             final_volume=volume,
-            sim_pixel_spacing=self.pixel_spacing,
+            sim_pixel_spacing=new_spacing,
         )

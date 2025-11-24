@@ -12,7 +12,7 @@ from torch_fourier_filter.mtf import make_mtf_grid
 
 from ttsim3d.device_handler import calculate_batches, get_device
 from ttsim3d.grid_coords import (
-    fourier_rescale_3d_force_size,
+    fourier_rescale_3d,
     get_atom_voxel_indices,
     get_upsampling,
     get_voxel_neighborhood_offsets,
@@ -428,7 +428,6 @@ def apply_simulation_filters(
     upsampled_volume: torch.Tensor,
     actual_upsampling: int,
     upsampled_pixel_size: float,
-    final_shape: tuple[int, int, int],
     apply_dose_weighting: bool,
     dose_start: float,
     dose_end: float,
@@ -454,8 +453,6 @@ def apply_simulation_filters(
         The actual upsampling factor used for the simulation.
     upsampled_pixel_size : float
         The pixel spacing for the upsampled volume in Angstroms.
-    final_shape : tuple[int, int, int]
-        The final shape of the simulated volume.
     apply_dose_weighting : bool
         If True, apply dose weighting to the simulation.
     dose_start : float
@@ -485,7 +482,8 @@ def apply_simulation_filters(
 
     """
     device = upsampled_volume.device
-
+    # place image center at array indices [0, 0, 0] and compute centered rfft3
+    upsampled_volume = torch.fft.fftshift(upsampled_volume, dim=(-3, -2, -1))
     upsampled_volume_rfft = torch.fft.rfftn(upsampled_volume, dim=(-3, -2, -1))
     upsampled_shape = upsampled_volume.shape
 
@@ -502,41 +500,53 @@ def apply_simulation_filters(
             fftshift=False,
             device=device,
         )
-
+        dose_filter[..., 0, 0, 0] = 1  # preserve mean
         upsampled_volume_rfft *= dose_filter
 
     # Fourier crop back to desired size
     if actual_upsampling != 1:
-        upsampled_volume_rfft = fourier_rescale_3d_force_size(
+        upsampled_volume_rfft, new_spacing, new_shape = fourier_rescale_3d(
             volume_fft=upsampled_volume_rfft,
             volume_shape=upsampled_shape,
-            target_size=final_shape[0],  # TODO: pass this arg as a tuple
-            rfft=True,
-            fftshift=False,
+            upsampled_pixel_size=upsampled_pixel_size,
+            target_pixel_size=upsampled_pixel_size * actual_upsampling,
         )
+    else:
+        new_spacing = upsampled_pixel_size
+        new_shape = upsampled_shape
 
     # Apply DQE, if requested
     if apply_dqe:
         mtf = make_mtf_grid(
-            image_shape=final_shape,
+            image_shape=new_shape,
             mtf_frequencies=mtf_frequencies,
             mtf_amplitudes=mtf_amplitudes,
             rfft=True,
             fftshift=False,
             device=device,
         )
+        mtf[..., 0, 0, 0] = 1  # preserve mean
         upsampled_volume_rfft *= mtf
 
     # Inverse FFT
-    cropped_volume = torch.fft.irfftn(
-        upsampled_volume_rfft,
-        s=final_shape,
-        dim=(-3, -2, -1),
-    )
-    # NOTE: ifftshift not needed since volume here was never fftshifted
-    # cropped_volume = torch.fft.ifftshift(cropped_volume, dim=(-3, -2, -1))
+    if actual_upsampling != 1:
+        cropped_volume = torch.fft.irfftn(
+            upsampled_volume_rfft,
+            s=new_shape,
+            dim=(-3, -2, -1),
+            norm="forward",
+        )
+        cropped_volume = cropped_volume * (1 / np.prod(upsampled_shape))
+    else:
+        cropped_volume = torch.fft.irfftn(
+            upsampled_volume_rfft,
+            s=new_shape,
+            dim=(-3, -2, -1),
+        )
+    # ifft shift back to center the volume
+    cropped_volume = torch.fft.ifftshift(cropped_volume, dim=(-3, -2, -1))
 
-    return cropped_volume
+    return cropped_volume, new_spacing
 
 
 def simulate3d(
@@ -559,7 +569,7 @@ def simulate3d(
     atom_batch_size: int = 16384,  # 2^14
     atom_bonded_ids: list[str] | None = None,
     molecule_type: list[str] | None = None,
-) -> torch.Tensor:
+) -> tuple[torch.Tensor, float]:
     """Simulate 3D electron scattering volume with requested parameters.
 
     Parameters
@@ -628,8 +638,10 @@ def simulate3d(
 
     Returns
     -------
-    torch.Tensor
+    final_volume: torch.Tensor
         The simulated 3D volume in real space.
+    new_spacing: float
+        The new pixel spacing of the simulated volume.
     """
     # Get compute device
     device = get_device(device)
@@ -716,11 +728,10 @@ def simulate3d(
         )
 
     # Apply filters to the simulation
-    final_volume = apply_simulation_filters(
+    final_volume, new_spacing = apply_simulation_filters(
         upsampled_volume=upsampled_volume,
         actual_upsampling=actual_upsampling,
         upsampled_pixel_size=setup_results["upsampled_pixel_size"],
-        final_shape=sim_volume_shape,
         apply_dose_weighting=apply_dose_weighting,
         dose_start=dose_start,
         dose_end=dose_end,
@@ -731,4 +742,4 @@ def simulate3d(
         mtf_amplitudes=mtf_amplitudes,
     )
 
-    return final_volume
+    return final_volume, new_spacing

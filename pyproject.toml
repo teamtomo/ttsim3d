@@ -52,6 +52,7 @@ dependencies = [
     "psutil",
     "teamtomo-basemodel",
     "torch-structure-manipulation",
+    "torch-fourier-rescale",
 ]
 
 [tool.hatch.metadata]
