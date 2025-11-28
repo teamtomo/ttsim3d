@@ -9,10 +9,14 @@ from pydantic import ConfigDict, Field, field_serializer, field_validator
 from pydantic.json_schema import SkipJsonSchema
 from teamtomo_basemodel import BaseModelTeamTomo
 from torch_fourier_filter.mtf import read_mtf
-from torch_structure_manipulation import load_model_bonds
+from torch_structure_manipulation.structure_loader import (
+    StructureLoadOptions,
+    df_params_to_tensors,
+    load_structure,
+)
 
 from ttsim3d.mrc_handler import tensor_to_mrc
-from ttsim3d.pdb_handler import load_model, remove_hydrogens
+from ttsim3d.pdb_handler import remove_hydrogens
 from ttsim3d.simulate3d import ALLOWED_DOSE_FILTER_MODIFICATIONS, simulate3d
 
 _data_dir = pathlib.Path(__file__).parent / "data"
@@ -245,54 +249,45 @@ class Simulator(BaseModelTeamTomo):
 
     def load_atoms_from_pdb_model(self) -> None:
         """Loads the structure atoms from held pdb file."""
-        if self.simulator_config.use_bonded_scattering_factors:
-            # Use load_model_bonds to get bonded atom information
-            (
-                atom_positions_zyx,
-                atom_ids,
-                atom_b_factors,
-                atom_bonded_ids,
-                molecule_type,
-            ) = load_model_bonds(
-                self.pdb_filepath,
-                center_atoms=self.center_atoms,
-                include_hydrogens=not self.remove_hydrogens,
-            )
+        structure_load_options = StructureLoadOptions(
+            center_atoms=self.center_atoms,
+            include_hydrogens=not self.remove_hydrogens,
+            load_bonded_environment=self.simulator_config.use_bonded_scattering_factors,
+        )
+        df_structure = load_structure(self.pdb_filepath, structure_load_options)
+        # Use load_model_bonds to get bonded atom information
+        (
+            atom_positions_zyx,
+            atom_ids,
+            atom_b_factors,
+            atom_bonded_ids,
+            molecule_type,
+        ) = df_params_to_tensors(df_structure)
 
-            # Remove hydrogens if requested (in case they were included)
-            if self.remove_hydrogens:
-                # Create mask before filtering
-                non_h_mask = [aid != "H" for aid in atom_ids]
-                atom_positions_zyx, atom_ids, atom_b_factors = remove_hydrogens(
-                    atom_positions_zyx, atom_ids, atom_b_factors
-                )
-                # Filter bonded_ids using the same mask
+        # Remove hydrogens if requested (in case they were included)
+        if self.remove_hydrogens:
+            # Create mask before filtering
+            non_h_mask = [atom_id != "H" for atom_id in atom_ids]
+            atom_positions_zyx, atom_ids, atom_b_factors = remove_hydrogens(
+                atom_positions_zyx, atom_ids, atom_b_factors
+            )
+            if self.simulator_config.use_bonded_scattering_factors:
                 atom_bonded_ids = [
                     bonded_id
                     for i, bonded_id in enumerate(atom_bonded_ids)
                     if non_h_mask[i]
                 ]
+                molecule_type = [
+                    molecule_type
+                    for i, molecule_type in enumerate(molecule_type)
+                    if non_h_mask[i]
+                ]
 
-            self.atom_positions_zyx = atom_positions_zyx
-            self.atom_identities = atom_ids
-            self.atom_b_factors = atom_b_factors
-            self.atom_bonded_ids = atom_bonded_ids
-            self.molecule_type = molecule_type
-        else:
-            # Use standard load_model
-            atom_positions_zyx, atom_ids, atom_b_factors = load_model(
-                self.pdb_filepath, self.center_atoms
-            )
-            if self.remove_hydrogens:
-                atom_positions_zyx, atom_ids, atom_b_factors = remove_hydrogens(
-                    atom_positions_zyx, atom_ids, atom_b_factors
-                )
-
-            self.atom_positions_zyx = atom_positions_zyx
-            self.atom_identities = atom_ids
-            self.atom_b_factors = atom_b_factors
-            self.atom_bonded_ids = None
-            self.molecule_type = None
+        self.atom_positions_zyx = atom_positions_zyx
+        self.atom_identities = atom_ids
+        self.atom_b_factors = atom_b_factors
+        self.atom_bonded_ids = atom_bonded_ids
+        self.molecule_type = molecule_type
 
     def get_scale_atom_b_factors(self) -> torch.Tensor:
         """Returns b-factors transformed by the scale and additional b-factor.
