@@ -2,7 +2,7 @@
 
 import os
 import pathlib
-from typing import Annotated, Any, Literal, Optional, Union
+from typing import Annotated, Any, Literal, Optional, TypeAlias, Union
 
 import torch
 from pydantic import ConfigDict, Field, field_serializer, field_validator
@@ -37,7 +37,7 @@ DEFAULT_MTF_REFERENCES = {
 }
 
 # Pydantic type annotation for large tensor excluded from JSON schema and dump
-ExcludedTensor = SkipJsonSchema[
+ExcludedTensor: TypeAlias = SkipJsonSchema[
     Annotated[torch.Tensor, Field(default=None, exclude=True)]
 ]
 
@@ -237,7 +237,7 @@ class Simulator(BaseModelTeamTomo):
     molecule_type: Optional[list[str]] = None
     volume: ExcludedTensor
 
-    @field_serializer("volume_shape")
+    @field_serializer("volume_shape")  # type: ignore[misc]
     def serialize_volume_shape(self, value: tuple[int, int, int]) -> list[int]:
         """Serialize volume_shape as a list instead of tuple for cleaner YAML output."""
         return list(value)
@@ -286,8 +286,12 @@ class Simulator(BaseModelTeamTomo):
         self.atom_positions_zyx = atom_positions_zyx
         self.atom_identities = atom_ids
         self.atom_b_factors = atom_b_factors
-        self.atom_bonded_ids = atom_bonded_ids
-        self.molecule_type = molecule_type
+        if self.simulator_config.use_bonded_scattering_factors:
+            self.atom_bonded_ids = atom_bonded_ids
+            self.molecule_type = molecule_type
+        else:
+            self.atom_bonded_ids = None
+            self.molecule_type = None
 
     def get_scale_atom_b_factors(self) -> torch.Tensor:
         """Returns b-factors transformed by the scale and additional b-factor.
@@ -422,7 +426,15 @@ class Simulator(BaseModelTeamTomo):
         None
         """
         volume, new_spacing = self.run(device=device, atom_indices=atom_indices)
-
+        # If new_spacing is not a single float, take the first item
+        # Handle numpy array, list, tuple, or single float
+        if isinstance(new_spacing, (list, tuple)) and len(new_spacing) > 0:
+            new_spacing = float(new_spacing[0])
+        elif hasattr(new_spacing, "__array__"):
+            # numpy array - get first element
+            new_spacing = float(new_spacing[0])  # type: ignore[index]
+        else:
+            new_spacing = float(new_spacing)
         tensor_to_mrc(
             output_filename=str(mrc_filepath),
             final_volume=volume,
