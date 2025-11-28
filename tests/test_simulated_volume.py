@@ -137,7 +137,7 @@ def test_simulate3d():
     simulate3d_kwargs = get_simulation_kwargs(pdb_filepath, dqe_filepath)
 
     # Run the simulation
-    simulated_volume = simulate3d(**simulate3d_kwargs)
+    simulated_volume, _ = simulate3d(**simulate3d_kwargs)
     simulated_volume = simulated_volume.cpu().numpy()
 
     # Save the simulated volume to a temporary file (optional)
