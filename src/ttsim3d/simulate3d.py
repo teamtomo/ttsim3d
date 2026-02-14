@@ -6,7 +6,7 @@ from typing import Literal, Union
 import einops
 import numpy as np
 import torch
-from torch_fourier_filter.ctf import calculate_relativistic_electron_wavelength
+from torch_ctf import calculate_relativistic_electron_wavelength
 from torch_fourier_filter.dose_weight import cumulative_dose_filter_3d
 from torch_fourier_filter.mtf import make_mtf_grid
 
