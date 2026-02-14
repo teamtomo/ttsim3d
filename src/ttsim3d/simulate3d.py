@@ -12,7 +12,7 @@ from torch_fourier_filter.mtf import make_mtf_grid
 
 from ttsim3d.device_handler import calculate_batches, get_device
 from ttsim3d.grid_coords import (
-    fourier_rescale_3d_force_size,
+    fourier_rescale_3d,
     get_atom_voxel_indices,
     get_upsampling,
     get_voxel_neighborhood_offsets,
@@ -249,6 +249,8 @@ def simulate_atomwise_scattering_potentials(
     atom_dds: torch.Tensor,
     voxel_offsets_flat: torch.Tensor,
     upsampled_pixel_size: float,
+    atom_bonded_ids: list[str] | None = None,
+    molecule_type: list[str] | None = None,
 ) -> torch.Tensor:
     """Simulates the scattering potentials for each atom around its neighborhood.
 
@@ -268,8 +270,14 @@ def simulate_atomwise_scattering_potentials(
         The voxel offsets for the neighborhood around the atom voxel.
     upsampled_pixel_size : float
         The upsampled pixel size in Angstroms.
+    atom_bonded_ids : list[str] | None
+        Bonded atom IDs (e.g., "C(HHCN)") for each atom. If None, uses standard
+        scattering factors. Default is None.
+    molecule_type : list[str] | None
+        Molecule types (e.g., ["protein", "rna"]). Used to select which bonded
+        scattering factors to use. Default is None.
 
-    Returnss
+    Returns
     -------
     dict
         A dictionary containing the neighborhood potentials and voxel positions.
@@ -298,6 +306,8 @@ def simulate_atomwise_scattering_potentials(
         atom_ids=atom_ids,
         atom_b_factors=atom_b_factors,
         lead_term=lead_term,
+        atom_bonded_ids=atom_bonded_ids,
+        molecule_type=molecule_type,
     )
 
     return {
@@ -418,7 +428,6 @@ def apply_simulation_filters(
     upsampled_volume: torch.Tensor,
     actual_upsampling: int,
     upsampled_pixel_size: float,
-    final_shape: tuple[int, int, int],
     apply_dose_weighting: bool,
     dose_start: float,
     dose_end: float,
@@ -444,8 +453,6 @@ def apply_simulation_filters(
         The actual upsampling factor used for the simulation.
     upsampled_pixel_size : float
         The pixel spacing for the upsampled volume in Angstroms.
-    final_shape : tuple[int, int, int]
-        The final shape of the simulated volume.
     apply_dose_weighting : bool
         If True, apply dose weighting to the simulation.
     dose_start : float
@@ -475,7 +482,8 @@ def apply_simulation_filters(
 
     """
     device = upsampled_volume.device
-
+    # place image center at array indices [0, 0, 0] and compute centered rfft3
+    upsampled_volume = torch.fft.fftshift(upsampled_volume, dim=(-3, -2, -1))
     upsampled_volume_rfft = torch.fft.rfftn(upsampled_volume, dim=(-3, -2, -1))
     upsampled_shape = upsampled_volume.shape
 
@@ -492,41 +500,45 @@ def apply_simulation_filters(
             fftshift=False,
             device=device,
         )
-
+        dose_filter[..., 0, 0, 0] = 1  # preserve mean
         upsampled_volume_rfft *= dose_filter
 
     # Fourier crop back to desired size
     if actual_upsampling != 1:
-        upsampled_volume_rfft = fourier_rescale_3d_force_size(
+        upsampled_volume_rfft, new_spacing, new_shape = fourier_rescale_3d(
             volume_fft=upsampled_volume_rfft,
             volume_shape=upsampled_shape,
-            target_size=final_shape[0],  # TODO: pass this arg as a tuple
-            rfft=True,
-            fftshift=False,
+            upsampled_pixel_size=upsampled_pixel_size,
+            target_pixel_size=upsampled_pixel_size * actual_upsampling,
         )
+    else:
+        new_spacing = upsampled_pixel_size
+        new_shape = upsampled_shape
 
     # Apply DQE, if requested
     if apply_dqe:
         mtf = make_mtf_grid(
-            image_shape=final_shape,
+            image_shape=new_shape,
             mtf_frequencies=mtf_frequencies,
             mtf_amplitudes=mtf_amplitudes,
             rfft=True,
             fftshift=False,
             device=device,
         )
+        mtf[..., 0, 0, 0] = 1  # preserve mean
         upsampled_volume_rfft *= mtf
 
     # Inverse FFT
+    # The mean is not preserved when upsampling, so we undo it here.
     cropped_volume = torch.fft.irfftn(
         upsampled_volume_rfft,
-        s=final_shape,
+        s=new_shape,
         dim=(-3, -2, -1),
     )
-    # NOTE: ifftshift not needed since volume here was never fftshifted
-    # cropped_volume = torch.fft.ifftshift(cropped_volume, dim=(-3, -2, -1))
+    # ifft shift back to center the volume
+    cropped_volume = torch.fft.ifftshift(cropped_volume, dim=(-3, -2, -1))
 
-    return cropped_volume
+    return cropped_volume, new_spacing
 
 
 def simulate3d(
@@ -547,7 +559,9 @@ def simulate3d(
     mtf_amplitudes: torch.Tensor = None,
     device: Union[int, str, list[int], list[str]] = "cuda:0",
     atom_batch_size: int = 16384,  # 2^14
-) -> torch.Tensor:
+    atom_bonded_ids: list[str] | None = None,
+    molecule_type: list[str] | None = None,
+) -> tuple[torch.Tensor, float]:
     """Simulate 3D electron scattering volume with requested parameters.
 
     Parameters
@@ -607,11 +621,19 @@ def simulate3d(
         The number of atoms to process (simulate the scattering potentials of) at a
         single time. This is partially controls the memory usage. If -1, the batch size
         calculated automatically. Default is 16384 (2^14).
+    atom_bonded_ids : list[str] | None
+        Bonded atom IDs (e.g., "C(HHCN)") for each atom. If None, uses standard
+        scattering factors. Default is None.
+    molecule_type : list[str] | None
+        Molecule types (e.g., ["protein", "rna"]). Used to select which bonded
+        scattering factors to use. Default is None.
 
     Returns
     -------
-    torch.Tensor
+    final_volume: torch.Tensor
         The simulated 3D volume in real space.
+    new_spacing: float
+        The new pixel spacing of the simulated volume.
     """
     # Get compute device
     device = get_device(device)
@@ -670,6 +692,11 @@ def simulate3d(
         )
 
         # Process a batch of atoms
+        # Get bonded_ids for this batch if available
+        batch_bonded_ids = (
+            atom_bonded_ids[start_idx:end_idx] if atom_bonded_ids is not None else None
+        )
+
         scattering_results = simulate_atomwise_scattering_potentials(
             atom_ids=atom_ids[start_idx:end_idx],
             atom_b_factors=atom_b_factors[start_idx:end_idx],
@@ -678,6 +705,8 @@ def simulate3d(
             atom_dds=setup_results["atom_dds"][start_idx:end_idx],
             voxel_offsets_flat=setup_results["voxel_offsets_flat"],
             upsampled_pixel_size=setup_results["upsampled_pixel_size"],
+            atom_bonded_ids=batch_bonded_ids,
+            molecule_type=molecule_type,
         )
 
         neighborhood_potentials = scattering_results["neighborhood_potentials"]
@@ -691,11 +720,10 @@ def simulate3d(
         )
 
     # Apply filters to the simulation
-    final_volume = apply_simulation_filters(
+    final_volume, new_spacing = apply_simulation_filters(
         upsampled_volume=upsampled_volume,
         actual_upsampling=actual_upsampling,
         upsampled_pixel_size=setup_results["upsampled_pixel_size"],
-        final_shape=sim_volume_shape,
         apply_dose_weighting=apply_dose_weighting,
         dose_start=dose_start,
         dose_end=dose_end,
@@ -706,4 +734,4 @@ def simulate3d(
         mtf_amplitudes=mtf_amplitudes,
     )
 
-    return final_volume
+    return final_volume, new_spacing
