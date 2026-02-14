@@ -19,7 +19,7 @@ name = "ttsim3d"
 dynamic = ["version"]
 description = "Simulate a 3D electrostatic potential map from a PDB in pyTorch"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = { text = "BSD-3-Clause" }
 authors = [
     { name = "Josh Dickerson", email = "jdickerson@berkeley.edu" },
@@ -33,6 +33,8 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Typing :: Typed",
 ]
 # add your package dependencies here
@@ -47,6 +49,7 @@ dependencies = [
     "mmdf",
     "requests",
     "torch-fourier-filter>=0.2.4",
+    "torch-ctf",
     "pydantic",
     "click",
     "psutil",
