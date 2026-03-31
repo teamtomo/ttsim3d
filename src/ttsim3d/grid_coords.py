@@ -1,7 +1,12 @@
 """Deals with grid coordinates."""
 
+import numbers
+from typing import Union
+
 import einops
+import numpy as np
 import torch
+from torch_fourier_rescale import fourier_rescale_rfft_3d
 
 
 def get_upsampling(
@@ -147,12 +152,11 @@ def get_voxel_neighborhood_offsets(
 
 
 # This will definitely be moved to a different program
-def fourier_rescale_3d_force_size(
+def fourier_rescale_3d(
     volume_fft: torch.Tensor,
     volume_shape: tuple[int, int, int],
-    target_size: int,
-    rfft: bool = True,
-    fftshift: bool = False,
+    upsampled_pixel_size: Union[float, tuple[float, float, float]],
+    target_pixel_size: Union[float, tuple[float, float, float]],
 ) -> torch.Tensor:
     """
     Crop a 3D Fourier-transformed volume to a specific target size.
@@ -163,64 +167,40 @@ def fourier_rescale_3d_force_size(
         The Fourier-transformed volume.
     volume_shape : tuple[int, int, int]
         The original shape of the volume.
-    target_size : int
-        The target size of the cropped volume.
-    rfft : bool
-        Whether the input is a real-to-complex Fourier Transform.
-    fftshift : bool
-        Whether the zero frequency is shifted to the center.
+    upsampled_pixel_size : float
+        The pixel size in Angstroms.
+    target_pixel_size : float
+        The pixel size in Angstroms.
 
     Returns
     -------
     cropped_fft_shifted_back : torch.Tensor
         The cropped fft
     """
-    # Ensure the target size is even
-    assert target_size > 0, "Target size must be positive."
+    if isinstance(upsampled_pixel_size, int | float | numbers.Real):
+        upsampled_pixel_size = (
+            upsampled_pixel_size,
+            upsampled_pixel_size,
+            upsampled_pixel_size,
+        )
+    if isinstance(target_pixel_size, int | float | numbers.Real):
+        target_pixel_size = (target_pixel_size, target_pixel_size, target_pixel_size)
+    # fft shift to center the dft
+    dft = torch.fft.fftshift(volume_fft, dim=(-3, -2))
+    # Fourier crop
+    dft, new_nyquist, new_shape = fourier_rescale_rfft_3d(
+        dft=dft,
+        image_shape=volume_shape,
+        source_spacing=upsampled_pixel_size,
+        target_spacing=target_pixel_size,
+    )
 
-    # Get the original size of the volume
-    assert (
-        volume_shape[0] == volume_shape[1] == volume_shape[2]
-    ), "Volume must be cubic."
+    # ifft shift back
+    dft = torch.fft.ifftshift(dft, dim=(-3, -2))
 
-    # Step 1: Perform real-to-complex Fourier Transform (rfftn)
-    # and shift the zero frequency to the center
-    if not fftshift:
-        volume_fft = torch.fft.fftshift(
-            volume_fft, dim=(-3, -2, -1)
-        )  # Shift along first two dimensions only
+    # Calculate new spacing after rescaling
+    source_spacing = np.array(upsampled_pixel_size, dtype=np.float32)
+    new_nyquist = np.array(new_nyquist, dtype=np.float32)
+    new_spacing = 1 / (2 * new_nyquist * (1 / source_spacing))
 
-    # Calculate the dimensions of the rfftn output
-    rfft_size_z, rfft_size_y, rfft_size_x = volume_fft.shape
-
-    # Calculate cropping indices for each dimension
-    center_z = rfft_size_z // 2
-    center_y = rfft_size_y // 2
-    center_x = rfft_size_x // 2
-
-    # Define the cropping ranges
-    crop_start_z = int(center_z - target_size // 2)
-    crop_end_z = int(crop_start_z + target_size)
-    crop_start_y = int(center_y - target_size // 2)
-    crop_end_y = int(crop_start_y + target_size)
-    crop_start_x = int(center_x - target_size // 2)
-    crop_end_x = int(
-        target_size // 2 + 1
-    )  # Crop from the high-frequency end only along the last dimension
-
-    # Step 2: Crop the Fourier-transformed volume
-    cropped_fft = torch.zeros_like(volume_fft)
-    if rfft:
-        cropped_fft = volume_fft[
-            crop_start_z:crop_end_z, crop_start_y:crop_end_y, -crop_end_x:
-        ]
-    else:
-        crop_end_x = int(crop_start_x + target_size)
-        cropped_fft = volume_fft[
-            crop_start_z:crop_end_z, crop_start_y:crop_end_y, crop_start_x:crop_end_x
-        ]
-
-    # Step 3: Inverse shift and apply the inverse rFFT to return to real space
-    cropped_fft_shifted_back = torch.fft.ifftshift(cropped_fft, dim=(-3, -2))
-
-    return cropped_fft_shifted_back
+    return dft, new_spacing, new_shape
