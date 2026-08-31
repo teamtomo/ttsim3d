@@ -9,13 +9,12 @@ from pydantic import ConfigDict, Field, field_serializer, field_validator
 from pydantic.json_schema import SkipJsonSchema
 from teamtomo_basemodel import BaseModelTeamTomo
 from torch_fourier_filter.mtf import read_mtf
-from torch_structure_manipulation.structure_loader import (
+from ttsim3d.mrc_handler import tensor_to_mrc
+from ttsim3d.structure_loading import (
     StructureLoadOptions,
     df_params_to_tensors,
     load_structure,
 )
-
-from ttsim3d.mrc_handler import tensor_to_mrc
 from ttsim3d.pdb_handler import remove_hydrogens
 from ttsim3d.simulate3d import ALLOWED_DOSE_FILTER_MODIFICATIONS, simulate3d
 
@@ -321,6 +320,10 @@ class Simulator(BaseModelTeamTomo):
         self,
         device: Union[int, list[int], str, list[str]] = "cpu",
         atom_indices: Optional[torch.Tensor] = None,
+        params_a_protein: Optional[dict[str, torch.Tensor]] = None,
+        params_a_rna: Optional[dict[str, torch.Tensor]] = None,
+        params_b_protein: Optional[dict[str, torch.Tensor]] = None,
+        params_b_rna: Optional[dict[str, torch.Tensor]] = None,
     ) -> tuple[torch.Tensor, float]:
         """Runs the simulation and returns the simulated volume.
 
@@ -334,6 +337,22 @@ class Simulator(BaseModelTeamTomo):
         atom_indices: torch.Tensor
             The indices of the atoms to simulate. The default is 'None' which
             will simulate all atoms in the structure.
+        params_a_protein : dict[str, torch.Tensor] | None
+            Optional dict of bonded protein scattering parameters 'a' as tensors.
+            If provided, these will be used instead of loading from JSON.
+            Default is None.
+        params_a_rna : dict[str, torch.Tensor] | None
+            Optional dict of bonded RNA scattering parameters 'a' as tensors.
+            If provided, these will be used instead of loading from JSON.
+            Default is None.
+        params_b_protein : dict[str, torch.Tensor] | None
+            Optional dict of bonded protein scattering parameters 'b' as tensors.
+            If provided, these will be used instead of loading from JSON.
+            Default is None.
+        params_b_rna : dict[str, torch.Tensor] | None
+            Optional dict of bonded RNA scattering parameters 'b' as tensors.
+            If provided, these will be used instead of loading from JSON.
+            Default is None.
 
         Returns
         -------
@@ -352,8 +371,8 @@ class Simulator(BaseModelTeamTomo):
         if atom_indices is None:
             atom_indices = torch.arange(self.atom_positions_zyx.size(0))
             atom_ids = self.atom_identities
-            # Get bonded_ids for selected atoms if available
             selected_bonded_ids = self.atom_bonded_ids
+            selected_molecule_types = self.molecule_type
         else:
             # Convert atom_indices to list for easier indexing
             if isinstance(atom_indices, torch.Tensor):
@@ -361,13 +380,18 @@ class Simulator(BaseModelTeamTomo):
             else:
                 atom_indices_list = list(atom_indices)
             atom_ids = [self.atom_identities[i] for i in atom_indices_list]
-            # Get bonded_ids for selected atoms if available
             if self.atom_bonded_ids is not None:
                 selected_bonded_ids = [
                     self.atom_bonded_ids[i] for i in atom_indices_list
                 ]
             else:
                 selected_bonded_ids = None
+            if self.molecule_type is not None:
+                selected_molecule_types = [
+                    self.molecule_type[i] for i in atom_indices_list
+                ]
+            else:
+                selected_molecule_types = None
 
         # Calculate the mtf_frequencies and mtf_amplitudes from reference file
         mtf_frequencies, mtf_amplitudes = self.simulator_config.mtf_tensors
@@ -391,7 +415,11 @@ class Simulator(BaseModelTeamTomo):
             device=device,
             atom_batch_size=self.simulator_config.atom_batch_size,
             atom_bonded_ids=selected_bonded_ids,
-            molecule_type=self.molecule_type,
+            molecule_type=selected_molecule_types,
+            params_a_protein=params_a_protein,
+            params_a_rna=params_a_rna,
+            params_b_protein=params_b_protein,
+            params_b_rna=params_b_rna,
         )
 
         if self.simulator_config.store_volume:

@@ -6,7 +6,7 @@ from typing import Literal, Union
 import einops
 import numpy as np
 import torch
-from torch_fourier_filter.ctf import calculate_relativistic_electron_wavelength
+from torch_ctf import calculate_relativistic_electron_wavelength
 from torch_fourier_filter.dose_weight import cumulative_dose_filter_3d
 from torch_fourier_filter.mtf import make_mtf_grid
 
@@ -251,6 +251,10 @@ def simulate_atomwise_scattering_potentials(
     upsampled_pixel_size: float,
     atom_bonded_ids: list[str] | None = None,
     molecule_type: list[str] | None = None,
+    params_a_protein: dict[str, torch.Tensor] | None = None,
+    params_a_rna: dict[str, torch.Tensor] | None = None,
+    params_b_protein: dict[str, torch.Tensor] | None = None,
+    params_b_rna: dict[str, torch.Tensor] | None = None,
 ) -> torch.Tensor:
     """Simulates the scattering potentials for each atom around its neighborhood.
 
@@ -276,6 +280,18 @@ def simulate_atomwise_scattering_potentials(
     molecule_type : list[str] | None
         Molecule types (e.g., ["protein", "rna"]). Used to select which bonded
         scattering factors to use. Default is None.
+    params_a_protein : dict[str, torch.Tensor] | None
+        Optional dict of bonded protein scattering parameters 'a' as tensors.
+        If provided, these will be used instead of loading from JSON. Default is None.
+    params_a_rna : dict[str, torch.Tensor] | None
+        Optional dict of bonded RNA scattering parameters 'a' as tensors.
+        If provided, these will be used instead of loading from JSON. Default is None.
+    params_b_protein : dict[str, torch.Tensor] | None
+        Optional dict of bonded protein scattering parameters 'b' as tensors.
+        If provided, these will be used instead of loading from JSON. Default is None.
+    params_b_rna : dict[str, torch.Tensor] | None
+        Optional dict of bonded RNA scattering parameters 'b' as tensors.
+        If provided, these will be used instead of loading from JSON. Default is None.
 
     Returns
     -------
@@ -308,6 +324,10 @@ def simulate_atomwise_scattering_potentials(
         lead_term=lead_term,
         atom_bonded_ids=atom_bonded_ids,
         molecule_type=molecule_type,
+        params_a_protein=params_a_protein,
+        params_a_rna=params_a_rna,
+        params_b_protein=params_b_protein,
+        params_b_rna=params_b_rna,
     )
 
     return {
@@ -561,6 +581,10 @@ def simulate3d(
     atom_batch_size: int = 16384,  # 2^14
     atom_bonded_ids: list[str] | None = None,
     molecule_type: list[str] | None = None,
+    params_a_protein: dict[str, torch.Tensor] | None = None,
+    params_a_rna: dict[str, torch.Tensor] | None = None,
+    params_b_protein: dict[str, torch.Tensor] | None = None,
+    params_b_rna: dict[str, torch.Tensor] | None = None,
 ) -> tuple[torch.Tensor, float]:
     """Simulate 3D electron scattering volume with requested parameters.
 
@@ -627,6 +651,18 @@ def simulate3d(
     molecule_type : list[str] | None
         Molecule types (e.g., ["protein", "rna"]). Used to select which bonded
         scattering factors to use. Default is None.
+    params_a_protein : dict[str, torch.Tensor] | None
+        Optional dict of bonded protein scattering parameters 'a' as tensors.
+        If provided, these will be used instead of loading from JSON. Default is None.
+    params_a_rna : dict[str, torch.Tensor] | None
+        Optional dict of bonded RNA scattering parameters 'a' as tensors.
+        If provided, these will be used instead of loading from JSON. Default is None.
+    params_b_protein : dict[str, torch.Tensor] | None
+        Optional dict of bonded protein scattering parameters 'b' as tensors.
+        If provided, these will be used instead of loading from JSON. Default is None.
+    params_b_rna : dict[str, torch.Tensor] | None
+        Optional dict of bonded RNA scattering parameters 'b' as tensors.
+        If provided, these will be used instead of loading from JSON. Default is None.
 
     Returns
     -------
@@ -692,9 +728,12 @@ def simulate3d(
         )
 
         # Process a batch of atoms
-        # Get bonded_ids for this batch if available
+        # Get bonded metadata for this batch if available
         batch_bonded_ids = (
             atom_bonded_ids[start_idx:end_idx] if atom_bonded_ids is not None else None
+        )
+        batch_molecule_types = (
+            molecule_type[start_idx:end_idx] if molecule_type is not None else None
         )
 
         scattering_results = simulate_atomwise_scattering_potentials(
@@ -706,7 +745,11 @@ def simulate3d(
             voxel_offsets_flat=setup_results["voxel_offsets_flat"],
             upsampled_pixel_size=setup_results["upsampled_pixel_size"],
             atom_bonded_ids=batch_bonded_ids,
-            molecule_type=molecule_type,
+            molecule_type=batch_molecule_types,
+            params_a_protein=params_a_protein,
+            params_a_rna=params_a_rna,
+            params_b_protein=params_b_protein,
+            params_b_rna=params_b_rna,
         )
 
         neighborhood_potentials = scattering_results["neighborhood_potentials"]

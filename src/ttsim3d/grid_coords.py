@@ -4,9 +4,13 @@ import numbers
 from typing import Union
 
 import einops
-import numpy as np
 import torch
 from torch_fourier_rescale import fourier_rescale_rfft_3d
+from torch_fourier_rescale.utils import (
+    calculate_new_spacing,
+    calculate_target_shape_from_spacing,
+    normalize_spacing,
+)
 
 
 def get_upsampling(
@@ -185,22 +189,24 @@ def fourier_rescale_3d(
         )
     if isinstance(target_pixel_size, int | float | numbers.Real):
         target_pixel_size = (target_pixel_size, target_pixel_size, target_pixel_size)
+    source_spacing = normalize_spacing(upsampled_pixel_size, 3)
+    target_spacing = normalize_spacing(target_pixel_size, 3)
+    target_shape = calculate_target_shape_from_spacing(
+        volume_shape, source_spacing, target_spacing
+    )
     # fft shift to center the dft
     dft = torch.fft.fftshift(volume_fft, dim=(-3, -2))
     # Fourier crop
-    dft, new_nyquist, new_shape = fourier_rescale_rfft_3d(
+    dft = fourier_rescale_rfft_3d(
         dft=dft,
         image_shape=volume_shape,
-        source_spacing=upsampled_pixel_size,
-        target_spacing=target_pixel_size,
+        target_shape=target_shape,
     )
 
     # ifft shift back
     dft = torch.fft.ifftshift(dft, dim=(-3, -2))
 
-    # Calculate new spacing after rescaling
-    source_spacing = np.array(upsampled_pixel_size, dtype=np.float32)
-    new_nyquist = np.array(new_nyquist, dtype=np.float32)
-    new_spacing = 1 / (2 * new_nyquist * (1 / source_spacing))
+    new_spacing = calculate_new_spacing(source_spacing, volume_shape, target_shape)
+    new_shape = target_shape
 
     return dft, new_spacing, new_shape

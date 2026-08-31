@@ -19,7 +19,7 @@ name = "ttsim3d"
 dynamic = ["version"]
 description = "Simulate a 3D electrostatic potential map from a PDB in pyTorch"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 license = { text = "BSD-3-Clause" }
 authors = [
     { name = "Josh Dickerson", email = "jdickerson@berkeley.edu" },
@@ -52,8 +52,13 @@ dependencies = [
     "psutil",
     "teamtomo-basemodel",
     "torch-structure-manipulation",
+    "torch-calculate-electrostatic-potential",
     "torch-fourier-rescale",
 ]
+
+[tool.uv.sources]
+torch-structure-manipulation = { path = "../teamtomo_main/teamtomo/packages/primitives/torch-structure-manipulation", editable = true }
+torch-calculate-electrostatic-potential = { path = "../teamtomo_main/teamtomo/packages/primitives/torch-calculate-electrostatic-potential", editable = true }
 
 [tool.hatch.metadata]
 allow-direct-references = true
