@@ -4,7 +4,7 @@ from importlib.metadata import PackageNotFoundError, version
 
 try:
     __version__ = version("ttsim3d")
-except PackageNotFoundError:
+except PackageNotFoundError:  # pragma: no cover
     __version__ = "uninstalled"
 __author__ = "Josh Dickerson"
 __email__ = "jdickerson@berkeley.edu"

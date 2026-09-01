@@ -27,13 +27,16 @@ def load_model(
         Atom coordinates, atom ids, and B factors.
     """
     df = mmdf.read(file_path)
-    atom_zyx = torch.tensor(df[["z", "y", "x"]].to_numpy()).float()  # (n_atoms, 3)
+    atom_zyx = torch.tensor(df[["z", "y", "x"]].to_numpy(copy=True))  # (n_atoms, 3)
+    atom_zyx = atom_zyx.float()
 
     if center_atoms:
         atom_zyx -= torch.mean(atom_zyx, dim=0, keepdim=True)  # center
 
     atom_id = df["element"].str.upper().tolist()
-    atom_b_factor = torch.tensor(df["b_isotropic"].to_numpy()).float()
+
+    atom_b_factor = torch.tensor(df["b_isotropic"].to_numpy(copy=True))  # (n_atoms,)
+    atom_b_factor = atom_b_factor.float()
 
     return atom_zyx, atom_id, atom_b_factor
 
