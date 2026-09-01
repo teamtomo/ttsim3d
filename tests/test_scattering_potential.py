@@ -1,67 +1,48 @@
+import gemmi
 import torch
+from torch_calculate_electrostatic_potential import get_peng_scattering_parameters
+from torch_structure_manipulation import annotate_bonding_environments
 
 from ttsim3d.scattering_potential import (
     get_a_param,
     get_b_param,
     get_total_b_param,
+    resolve_atom_scattering_parameters,
 )
 
 
-def test_get_scattering_parameters():
-    """TODO: Construct this test"""
-    pass
+def _elemental_expected(atom_ids: list[str]) -> tuple[torch.Tensor, torch.Tensor]:
+    atomic_numbers = torch.tensor(
+        [gemmi.Element(atom_id).atomic_number for atom_id in atom_ids],
+        dtype=torch.int64,
+    )
+    return get_peng_scattering_parameters(atomic_numbers)
 
 
 def test_get_a_param():
-    """Test the get_a_param function."""
+    """Elemental parameters match the bundled Peng table."""
     atom_ids = ["H", "N", "O", "C"]
-
-    # NOTE: These are just copied from the elastic_scattering_factors.json file
-    expected = torch.tensor(
-        [
-            [0.0349, 0.1201, 0.1970, 0.0573, 0.1195],
-            [0.1022, 0.3219, 0.7982, 0.8197, 0.1715],
-            [0.0974, 0.2921, 0.6910, 0.6990, 0.2039],
-            [0.0893, 0.2563, 0.7570, 1.0487, 0.3575],
-        ]
-    )
+    expected_a, _ = _elemental_expected(atom_ids)
     result = get_a_param(atom_ids)
 
-    assert isinstance(result, torch.Tensor), f"Expected a tensor, got {type(result)}"
-    assert torch.allclose(
-        result, expected
-    ), "Mismatch between expected a parameters and result"
+    assert isinstance(result, torch.Tensor)
+    assert torch.allclose(result, expected_a)
 
 
 def test_get_b_param():
-    """Test the get_b_param function."""
+    """Elemental width parameters match the bundled Peng table."""
     atom_ids = ["H", "N", "O", "C"]
-
-    # NOTE: These are just copied from the elastic_scattering_factors.json file
-    expected = torch.tensor(
-        [
-            [0.5347, 3.5867, 12.3471, 18.9525, 38.6269],
-            [0.2451, 1.7481, 6.1925, 17.3894, 48.1431],
-            [0.2067, 1.3815, 4.6943, 12.7105, 32.4726],
-            [0.2465, 1.7100, 6.4094, 18.6113, 50.2523],
-        ]
-    )
-
+    _, expected_b = _elemental_expected(atom_ids)
     result = get_b_param(atom_ids)
 
-    assert isinstance(result, torch.Tensor), f"Expected a tensor, got {type(result)}"
-
-    assert torch.allclose(
-        result, expected
-    ), "Mismatch between expected b parameters and result"
+    assert isinstance(result, torch.Tensor)
+    assert torch.allclose(result, expected_b)
 
 
 def test_get_total_b_param():
-    """Test for combined b parameter and B-factor."""
+    """Combined B-parameter kernel matches the historical formula."""
     atom_ids = ["H", "N", "O", "C"]
     atom_b_factors = torch.tensor([40.0, 30.0, 20.0, 10.0])
-
-    # expected is 2 * PI / sqrt(B_n + b)
     expected = torch.tensor(
         [
             [0.986885, 0.951706, 0.868428, 0.818331, 0.708589],
@@ -73,8 +54,33 @@ def test_get_total_b_param():
 
     result = get_total_b_param(atom_ids, atom_b_factors)
 
-    assert isinstance(result, torch.Tensor), f"Expected a tensor, got {type(result)}"
+    assert isinstance(result, torch.Tensor)
+    assert torch.allclose(result, expected)
 
-    assert torch.allclose(
-        result, expected
-    ), "Mismatch between expected total b parameters and result"
+
+def test_bonded_parameters_use_monorepo_tables():
+    import pandas as pd
+
+    atoms = pd.DataFrame(
+        [
+            ("A", 1, "ALA", "C", "C", 0.0, 0.0, 0.0),
+            ("A", 1, "ALA", "O", "O", 1.0, 0.0, 0.0),
+            ("A", 1, "ALA", "CA", "C", -1.0, 0.0, 0.0),
+        ],
+        columns=["chain", "residue_id", "residue", "atom", "element", "x", "y", "z"],
+    )
+    annotated = annotate_bonding_environments(atoms, include_hydrogens=False)
+    atom_ids = annotated["element"].str.upper().tolist()
+    bonded_ids = annotated["bonded_environments"].tolist()
+    molecule_types = annotated["molecule_type"].tolist()
+
+    params_a, params_b = resolve_atom_scattering_parameters(
+        atom_ids,
+        atom_bonded_ids=bonded_ids,
+        molecule_type=molecule_types,
+    )
+
+    assert params_a.shape == (3, 5)
+    assert params_b.shape == (3, 5)
+    elemental_a, _ = _elemental_expected(atom_ids)
+    assert not torch.allclose(params_a, elemental_a)
