@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Optional `potential_backend` on `SimulatorConfig`: `"ttsim3d"` (default) or
+  `"teamtomo"`. The teamtomo backend wraps
+  `torch-calculate-electrostatic-potential.potential_from_structure_3d` for
+  volt-normalized potentials from the TeamTomo monorepo.
+- `teamtomo_potential.py`, tests, and `scripts/benchmark_potential_backends.py`
+  for backend comparison.
+
 ## [v0.4.0] -- 17 June 2025
 
 ### Modified

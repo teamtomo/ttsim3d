@@ -10,6 +10,7 @@ import gemmi
 import torch
 from torch_calculate_electrostatic_potential import BondedScatteringFactorTable
 from torch_calculate_electrostatic_potential.utils.peng_model import (
+    ScatteringFactors,
     resolve_scattering_parameters,
 )
 
@@ -73,6 +74,29 @@ def _apply_parameter_overrides(
                 device=result.device, dtype=result.dtype
             )
     return result
+
+
+def resolve_scattering_factors_spec(
+    *,
+    atom_bonded_ids: list[str] | None = None,
+    molecule_type: list[str] | None = None,
+    params_a_protein: dict[str, torch.Tensor] | None = None,
+    params_a_rna: dict[str, torch.Tensor] | None = None,
+    params_b_protein: dict[str, torch.Tensor] | None = None,
+    params_b_rna: dict[str, torch.Tensor] | None = None,
+) -> ScatteringFactors:
+    """Return the scattering-factor spec for monorepo potential calculators."""
+    use_bonded = atom_bonded_ids is not None and molecule_type is not None
+    if not use_bonded:
+        return "peng_elemental"
+
+    custom_providers = _custom_bonded_providers(
+        params_a_protein,
+        params_b_protein,
+        params_a_rna,
+        params_b_rna,
+    )
+    return custom_providers if custom_providers is not None else "peng_bonded"
 
 
 def resolve_atom_scattering_parameters(

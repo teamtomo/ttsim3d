@@ -95,6 +95,13 @@ class SimulatorConfig(BaseModelTeamTomo):
         If True, use bonded scattering factors instead of standard scattering
         factors. This requires loading the model with bond information using
         `load_model_bonds`. Default is False.
+    potential_backend : {"ttsim3d", "teamtomo"}
+        Potential calculation backend. Default is ``ttsim3d``.
+    teamtomo_atom_batch_size : int
+        Atom batch size when ``potential_backend="teamtomo"``. Default is 4096.
+    teamtomo_sublattice_radius : float | None
+        Sublattice stencil radius in Angstroms for the teamtomo backend. If None,
+        uses ``max(5.0, 3.0 * pixel_spacing)``.
 
     Methods
     -------
@@ -116,6 +123,9 @@ class SimulatorConfig(BaseModelTeamTomo):
     store_volume: bool = True
     atom_batch_size: int = 16384  # 2^14
     use_bonded_scattering_factors: Annotated[bool, Field(default=False)] = False
+    potential_backend: Literal["ttsim3d", "teamtomo"] = "ttsim3d"
+    teamtomo_atom_batch_size: int = 4096
+    teamtomo_sublattice_radius: float | None = None
 
     @field_validator("dose_filter_modify_signal")  # type: ignore
     def validate_dose_filter_modify_signal(cls, v):
@@ -420,6 +430,9 @@ class Simulator(BaseModelTeamTomo):
             params_a_rna=params_a_rna,
             params_b_protein=params_b_protein,
             params_b_rna=params_b_rna,
+            potential_backend=self.simulator_config.potential_backend,
+            teamtomo_atom_batch_size=self.simulator_config.teamtomo_atom_batch_size,
+            teamtomo_sublattice_radius=self.simulator_config.teamtomo_sublattice_radius,
         )
 
         if self.simulator_config.store_volume:

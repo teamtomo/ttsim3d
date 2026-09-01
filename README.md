@@ -121,6 +121,49 @@ volume_gpu = sim.run(device="cuda:0")
 sim.export_to_mrc(mrc_filepath, device="cuda:0")
 ```
 
+### Potential calculation backends
+
+`ttsim3d` supports two backends for building the 3D electrostatic potential
+before dose weighting and DQE filtering. Select the backend with
+`SimulatorConfig.potential_backend`:
+
+| Backend | Default | Description |
+| ------- | ------- | ----------- |
+| `"ttsim3d"` | yes | Historical upsampled neighborhood splatting kernel from Himes & Grigorieff (2021). Uses cisTEM-style scaling via `lead_term`. |
+| `"teamtomo"` | no | Delegates to [`potential_from_structure_3d`](https://github.com/teamtomo/teamtomo/tree/main/packages/primitives/torch-calculate-electrostatic-potential) from the TeamTomo monorepo. Output is in **volts** with documented SI normalization. |
+
+Both backends share the same Peng scattering-factor tables (elemental and bonded)
+via `resolve_scattering_factors`. Dose weighting, DQE, and Fourier rescaling run
+identically after the potential is computed.
+
+```python
+from ttsim3d.models import Simulator, SimulatorConfig
+
+# Default: historical ttsim3d kernel
+sim_conf = SimulatorConfig(potential_backend="ttsim3d")
+
+# TeamTomo monorepo backend (volts, dense sublattice stencil)
+sim_conf = SimulatorConfig(
+    potential_backend="teamtomo",
+    teamtomo_atom_batch_size=4096,       # optional, default 4096
+    teamtomo_sublattice_radius=None,     # optional; default max(5.0, 3.0 * pixel_spacing)
+)
+```
+
+**Notes:**
+
+- The `"teamtomo"` backend requires editable installs of
+  `torch-structure-manipulation` and `torch-calculate-electrostatic-potential`
+  (included as path dependencies when developing against the TeamTomo monorepo).
+- The backends use different real-space kernels and unit conventions, so absolute
+  voxel values can differ by orders of magnitude even for the same structure.
+  Relative map shape is similar (Pearson *r* ~ 0.6–0.7 on ribosome benchmarks).
+- The `"teamtomo"` backend computes at the target pixel spacing and **ignores**
+  `SimulatorConfig.upsampling` (a warning is emitted if upsampling would differ
+  from 1).
+
+To compare backends on a structure, use `scripts/benchmark_potential_backends.py`.
+
 ### Working with configuration files
 
 Simulation configurations can be saved to disk as either a YAML or JSON file by using the `to_yaml` or `to_json` methods of the `Simulator` class, respectively.
@@ -150,6 +193,7 @@ simulator_config:
   dose_filter_modify_signal: None
   dose_start: 0.0
   mtf_reference: k2_300kv
+  potential_backend: ttsim3d
   store_volume: true
   upsampling: -1
   voltage: 300.0

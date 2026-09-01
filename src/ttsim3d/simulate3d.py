@@ -20,6 +20,9 @@ from ttsim3d.grid_coords import (
 from ttsim3d.scattering_potential import (
     get_scattering_potential_of_voxel_batch,
 )
+from ttsim3d.teamtomo_potential import simulate_potential_teamtomo
+
+PotentialBackend = Literal["ttsim3d", "teamtomo"]
 
 BOND_SCALING_FACTOR = 1.043
 PIXEL_OFFSET = 0.5
@@ -585,6 +588,9 @@ def simulate3d(
     params_a_rna: dict[str, torch.Tensor] | None = None,
     params_b_protein: dict[str, torch.Tensor] | None = None,
     params_b_rna: dict[str, torch.Tensor] | None = None,
+    potential_backend: PotentialBackend = "ttsim3d",
+    teamtomo_atom_batch_size: int = 4096,
+    teamtomo_sublattice_radius: float | None = None,
 ) -> tuple[torch.Tensor, float]:
     """Simulate 3D electron scattering volume with requested parameters.
 
@@ -663,6 +669,15 @@ def simulate3d(
     params_b_rna : dict[str, torch.Tensor] | None
         Optional dict of bonded RNA scattering parameters 'b' as tensors.
         If provided, these will be used instead of loading from JSON. Default is None.
+    potential_backend : {"ttsim3d", "teamtomo"}
+        Potential calculation backend. ``ttsim3d`` uses the historical upsampled
+        neighborhood splatting kernel. ``teamtomo`` uses
+        ``potential_from_structure_3d`` from torch-calculate-electrostatic-potential.
+    teamtomo_atom_batch_size : int
+        Atom batch size for the teamtomo backend. Default is 4096.
+    teamtomo_sublattice_radius : float | None
+        Sublattice stencil radius in Angstroms for the teamtomo backend. If None,
+        uses ``max(5.0, 3.0 * sim_pixel_spacing)``.
 
     Returns
     -------
@@ -693,6 +708,54 @@ def simulate3d(
         dose_filter_modify_signal, dose_filter_critical_bfactor
     )
     _validate_dqe_filter_inputs(apply_dqe, mtf_frequencies, mtf_amplitudes)
+
+    if potential_backend == "teamtomo":
+        if requested_upsampling not in (-1, 1):
+            warnings.warn(
+                "The teamtomo potential backend computes at the target pixel spacing "
+                "and ignores the requested upsampling factor.",
+                stacklevel=2,
+            )
+        elif requested_upsampling == -1:
+            auto_upsampling = get_upsampling(
+                sim_pixel_spacing, sim_volume_shape[0], max_size=MAX_SIZE
+            )
+            if auto_upsampling != 1:
+                warnings.warn(
+                    "The teamtomo potential backend computes at the target pixel "
+                    f"spacing and ignores automatic upsampling ({auto_upsampling}x) "
+                    "used by the ttsim3d kernel.",
+                    stacklevel=2,
+                )
+
+        potential_volume = simulate_potential_teamtomo(
+            atom_positions_zyx=atom_positions_zyx,
+            atom_ids=atom_ids,
+            atom_b_factors=atom_b_factors,
+            sim_pixel_spacing=sim_pixel_spacing,
+            sim_volume_shape=sim_volume_shape,
+            atom_bonded_ids=atom_bonded_ids,
+            molecule_type=molecule_type,
+            params_a_protein=params_a_protein,
+            params_a_rna=params_a_rna,
+            params_b_protein=params_b_protein,
+            params_b_rna=params_b_rna,
+            atom_batch_size=teamtomo_atom_batch_size,
+            sublattice_radius=teamtomo_sublattice_radius,
+        )
+        return apply_simulation_filters(
+            upsampled_volume=potential_volume,
+            actual_upsampling=1,
+            upsampled_pixel_size=sim_pixel_spacing,
+            apply_dose_weighting=apply_dose_weighting,
+            dose_start=dose_start,
+            dose_end=dose_end,
+            dose_filter_modify_signal=dose_filter_modify_signal,
+            dose_filter_critical_bfactor=dose_filter_critical_bfactor,
+            apply_dqe=apply_dqe,
+            mtf_frequencies=mtf_frequencies,
+            mtf_amplitudes=mtf_amplitudes,
+        )
 
     # Calculate the atom-wise scattering potentials
     lead_term = _calculate_lead_term(beam_energy_kev, sim_pixel_spacing)
