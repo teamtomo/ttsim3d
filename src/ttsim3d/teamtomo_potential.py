@@ -6,7 +6,11 @@ import warnings
 
 import gemmi
 import torch
-from torch_calculate_electrostatic_potential import GridConfig, potential_from_structure_3d
+from torch_calculate_electrostatic_potential import (
+    GridConfig,
+    default_sublattice_radius,
+    potential_from_structure_3d,
+)
 from torch_calculate_electrostatic_potential.utils.peng_model import ScatteringFactors
 from torch_structure_manipulation import AtomicStructure
 
@@ -37,11 +41,6 @@ def build_atomic_structure(
         bonded_environments=tuple(atom_bonded_ids) if atom_bonded_ids is not None else None,
         molecule_types=tuple(molecule_type) if molecule_type is not None else None,
     )
-
-
-def default_sublattice_radius(pixel_spacing: float) -> float:
-    """Match the torch-fit-in-map default stencil sizing."""
-    return max(5.0, 3.0 * pixel_spacing)
 
 
 def simulate_potential_teamtomo(

@@ -101,7 +101,7 @@ def load_structure(
         )
     else:
         df = df.copy()
-        df["bonded_environment"] = None
+        df["bonded_environments"] = None
         df["molecule_type"] = None
 
     return df
@@ -114,6 +114,6 @@ def df_params_to_tensors(
     atom_zyx = torch.tensor(df[["z", "y", "x"]].to_numpy(copy=True)).float()
     atom_id = df["element"].str.upper().tolist()
     atom_b_factor = torch.tensor(df["b_isotropic"].to_numpy(copy=True)).float()
-    atom_bonded_id = df["bonded_environment"].tolist()
+    atom_bonded_id = df["bonded_environments"].tolist()
     molecule_type = df["molecule_type"].tolist()
     return atom_zyx, atom_id, atom_b_factor, atom_bonded_id, molecule_type

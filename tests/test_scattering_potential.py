@@ -71,7 +71,7 @@ def test_bonded_parameters_use_monorepo_tables():
     )
     annotated = annotate_bonding_environments(atoms, include_hydrogens=False)
     atom_ids = annotated["element"].str.upper().tolist()
-    bonded_ids = annotated["bonded_environment"].tolist()
+    bonded_ids = annotated["bonded_environments"].tolist()
     molecule_types = annotated["molecule_type"].tolist()
 
     params_a, params_b = resolve_atom_scattering_parameters(

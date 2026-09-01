@@ -57,7 +57,7 @@ def test_load_structure_annotates_bonding(tmp_path: Path):
         ),
     )
 
-    assert "bonded_environment" in df.columns
+    assert "bonded_environments" in df.columns
     assert "molecule_type" in df.columns
     assert set(df["molecule_type"]) <= {"protein", "rna", "other"}
 
