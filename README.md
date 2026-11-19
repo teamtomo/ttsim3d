@@ -6,174 +6,186 @@
 [![CI](https://github.com/jdickerson95/ttsim3d/actions/workflows/ci.yml/badge.svg)](https://github.com/jdickerson95/ttsim3d/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/jdickerson95/ttsim3d/branch/main/graph/badge.svg)](https://codecov.io/gh/jdickerson95/ttsim3d)
 
-Simulate 3D electrostatic potential maps from a PDB file in PyTorch.
-This package currently replicates theory laid out in [Himes & Grigorieff (2021)](https://doi.org/10.1107/S2052252521008538).
+Simulate 3D electrostatic potential maps from atomic structures (PDB/mmCIF) in PyTorch.
+
+`ttsim3d` is a thin layer over the [teamtomo](https://github.com/teamtomo/teamtomo) primitives:
+
+| Step | Package |
+|---|---|
+| Read structure, bonding annotation | `mmdf`, `torch-structure-manipulation` |
+| Potential under the isolated-atom superposition approximation (Peng 1996 elemental or bonded scattering factors, averaged over each voxel) | `torch-calculate-electrostatic-potential` |
+| Upsampled simulation -> Fourier crop | `torch-fourier-rescale` |
+| Cumulative dose filter, detector MTF | `torch-fourier-filter` |
 
 For a full list of changes, see the [CHANGELOG](CHANGELOG.md).
 
 ## Installation
 
-`ttsim3d` is available on PyPi and can be installed via
-
 ```zsh
 pip install ttsim3d
 ```
 
-### From source
-To create a source installation, first download/clone the repository, then run the install command
-```zsh
-git clone https://github.com/teamtomo/ttsim3d.git
-cd ttsim3d
-pip install -e .
-```
+From source, including development and test dependencies:
 
-Optional development and testing dependencies can also be installed by running
 ```zsh
+git clone https://github.com/jdickerson95/ttsim3d.git
+cd ttsim3d
 pip install -e ".[dev,test]"
 ```
 
-## Running CLI program
+## Units and conventions
 
-Installation of the package creates the executable program `ttsim3d-cli` which takes in a PDB file along with other simulation options and outputs the simulated 3D scattering potential to a .mrc file. 
-All options for the program can be printed by running:
-```zsh
-ttsim3d-cli --help
-```
+- Simulated potentials are in **volts**.
+- Coordinates and pixel spacings are in Angstroms. Arrays are ordered ZYX.
+- The physical origin is at voxel index `N // 2` along every axis (the FFT
+  convention used by RELION and cisTEM). By default the structure is centered
+  on its mean atom position; pass `center=False` to keep the coordinates of a
+  pre-aligned model.
+- Atomic B-factors are used as given (Debye–Waller factor `exp(-B s^2)`), and
+  atoms are weighted by their occupancy.
 
-<!-- The following are descriptions of each of the options for the program
+## Python API
 
+### Configured simulations: `Simulator`
 
-| Option                        | Type                                  | Default       | Description                                                                                                                                                       |
-| ------------------------------|---------------------------------------|---------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `--pdb-filepath`              | Path                                  | required      | The path to the PDB file containing the atomic structure to simulate.
-| `--mrc-filepath`              | Path                                  | required      | File path to save simulated volume.
-| `--pixel-spacing`             | float                                 | required      | The pixel spacing of the simulated volume in units of Angstroms. Must be greater than 0.
-| `--volume-shape`              | (int, int, int)                       | required      | The shape of the simulated volume in pixels.
-| `--voltage`                   | float                                 | `300.0`       | The voltage of the microscope in kV. Default is 300 kV.
-| `--upsampling`                | int                                   | `-1`          | The upsampling factor to apply to the simulation. The default is -1 and corresponds to automatic calculation of the upsampling factor.
-| `--b-factor-scaling`          | float                                 | `1.0`         | The scaling factor to apply to the B-factors of the atoms in the pdb file. The default is 1.0.
-| `--additional-b-factor`       | float                                 | `0.0`         | Additional B-factor to apply to the atoms in the pdb file. The default is 0.0.
-| `--apply-dose-weighting`      | bool                                  | `True`        | If True, apply dose weighting to the simulation. Default is True.
-| `--crit-exposure-bfactor`     | float                                 | `-1.0`        | B-factor to use in critical exposure calculations. The default is -1 and corresponds to the fitted critical exposure function in Grant and Grigorieff, 2015.
-| `--dose-filter-modify-signal` | Literal["None", "sqrt", "rel_diff"]   | `"None"`      | Signal modification to apply to the dose filter. Currently supports 'None', 'sqrt', and 'rel_diff'.
-| `--dose-start`                | float                                 | `0.0`         | The starting dose in e/A^2.
-| `--dose-end`                  | float                                 | `30.0`        | The ending dose in e/A^2.
-| `--apply-dqe`                 | bool                                  | `True`        | If True, apply a DQE filter to the simulation.
-| `--mtf-reference`             | Path or str                           | `"k2_300kV"`  | Path to the modulation transfer function (MTF) reference star file, or one of the known MTF reference files. Default is 'k2_300kV'.
-| `--device`                   | str                             | `"cpu"`        | The device to use for the simulation (e.g., "cpu" for CPU computation, or "cuda:0" or "0" for GPU computation on the zeroth device). -->
+`Simulator` is a serializable (Pydantic) description of a simulation:
 
-## Python objects
-
-There are two user-facing classes in `ttsim3d` built upon Pydantic models for validating inputs and simulating a volume.
-The first class, `ttsim3d.models.Simulator`, holds reference to a PDB file and basic simulation parameters related to that structure.
-The second class, `ttsim3d.models.SimulatorConfig` is used to configure more advanced options, such as dose weighting and simulation upsampling.
-An basic use of these objects to run a simulation looks like
 ```python
-from ttsim3d.models import Simulator, SimulatorConfig
+from ttsim3d import Simulator
 
-# Instantiate the configuration object 
-sim_conf = SimulatorConfig(
-    voltage=300.0,  # in keV
-    apply_dose_weighting=True,
-    dose_start=0.0,  # in e-/A^2
-    dose_end=35.0,   # in e-/A^2
-    upsampling=-1,   # auto
-)
-
-# Instantiate the simulator
 sim = Simulator(
-    pdb_filepath="some/path/to/structure.pdb",
-    pixel_spacing=1.25,  # Angstroms
+    structure={"path": "some/path/to/structure.pdb", "b_factor_offset": 15.0},
+    pixel_spacing=1.25,           # Angstroms
     volume_shape=(256, 256, 256),
-    b_factor_scaling=1.0,
-    additional_b_factor=15.0,  # Add to all atoms
-    simulator_config=sim_conf,
+    dose_filter={"end": 35.0},    # e-/A^2; None disables the dose filter
+    mtf="k2_300kV",               # bundled MTF name or star file; None (default) disables it
 )
 
-# Run the simulation
-volume = sim.run()
-print(type(volume))  # torch.Tensor
-print(volume.shape)  # (256, 256, 256)
-
-# OR export the simulation to a mrc file
-mrc_filepath = "some/path/to/simulated_structure/mrc"
-sim.export_to_mrc(mrc_filepath)
+volume = sim.run(device="cuda:0")         # filtered volume, torch.Tensor (256, 256, 256)
+potential = sim.simulate_potential()      # unfiltered potential in volts
+sim.export_to_mrc("simulated_structure.mrc", device="cuda:0")
 ```
 
-### Running on GPU or CPU
-
-The `ttsim3d` package supports GPU accelerated simulations with PyTorch.
-Use the `device` argument to specify which device to run the simulation on.
+The model holds only settings, so they can be changed between runs (e.g.
+`sim.pixel_spacing = 1.5`). Settings round-trip through YAML or JSON:
 
 ```python
-# ...
-# Assume same objects as above
-
-# Run on the CPU
-volume_cpu = sim.run(device="cpu")
-
-# Run on the GPU (assumes CUDA is available)
-# Both run on the zeroth GPU device
-volume_gpu = sim.run(device="0")
-volume_gpu = sim.run(device="cuda:0")
-
-# Same argument can be passed to the `export_to_mrc` method
-sim.export_to_mrc(mrc_filepath, device="cuda:0")
+sim.to_yaml("simulation_config.yaml")
+sim = Simulator.from_yaml("simulation_config.yaml")
 ```
 
-### Working with configuration files
-
-Simulation configurations can be saved to disk as either a YAML or JSON file by using the `to_yaml` or `to_json` methods of the `Simulator` class, respectively.
-Assuming the same `sim` object defined as above, you can export the configuration to a YAML file like this:
-```python
-sim.to_yaml("some/path/to/simulation_config.yaml")
-```
-
-The contents of the YAML file will look something like this:
 ```yaml
-additional_b_factor: 15.0
-b_factor_scaling: 1.0
-center_atoms: true
-pdb_filepath: some/path/to/structure.pdb
+dose_filter:
+  critical_bfactor: null   # null: Grant & Grigorieff (2015) critical exposure
+  end: 35.0
+  modify_signal: none      # none | sqrt | rel_diff
+  start: 0.0
+mtf: k2_300kv
 pixel_spacing: 1.25
-remove_hydrogens: true
+potential:
+  batch_size: 4096
+  bonded_fallback: elemental
+  scattering_factors: peng_elemental   # or peng_bonded
+  sublattice_radius: null              # null: chosen from the B-factors
+  upsampling: null                     # null: chosen from the pixel spacing
+structure:
+  b_factor_offset: 15.0
+  b_factor_scale: 1.0
+  center: true
+  path: some/path/to/structure.pdb
+  remove_hydrogens: true
 volume_shape:
 - 256
 - 256
 - 256
-simulator_config:
-  apply_dose_weighting: true
-  apply_dqe: true
-  atom_batch_size: 16384
-  crit_exposure_bfactor: -1
-  dose_end: 35.0
-  dose_filter_modify_signal: None
-  dose_start: 0.0
-  mtf_reference: k2_300kv
-  store_volume: true
-  upsampling: -1
-  voltage: 300.0
 ```
 
-Similarly, you can load in a configuration from a YAML file by using the `from_yaml` class method of the `Simulator` class:
-```python
-from ttsim3d.models import Simulator
+### Building blocks
 
-sim = Simulator.from_yaml("some/path/to/simulation_config.yaml")
-```
-
-## Included MTF reference files
-
-Users can specify MTF reference by a path to a star file under the `SimulatorConfig.mtf_reference` parameter.
-Applying a DQE filter during simulation can be turned on or off by the `SimulatorConfig.apply_dqe` parameter.
-
-The `ttsim3d` package includes several common MTF reference files which are accessible by a string rather than a path.
-To see the list of included MTF reference files, run the following code snippet:
+Each step is also available as a function:
 
 ```python
-from ttsim3d import models
+from ttsim3d import (
+    adjust_b_factors,
+    apply_fourier_filters,
+    dose_filter_3d,
+    load_structure,
+    mtf_filter_3d,
+    simulate_potential,
+)
 
-print(models.included_mtf_references())
+structure = load_structure("structure.cif", device="cuda:0")   # AtomicStructure
+structure = adjust_b_factors(structure, scale=1.0, offset=15.0)
+
+potential = simulate_potential(structure, 1.25, (256, 256, 256))  # volts
+
+volume = apply_fourier_filters(
+    potential,
+    dose_filter_3d((256, 256, 256), 1.25, dose_end=35.0, device="cuda:0"),
+    mtf_filter_3d((256, 256, 256), "k2_300kv", device="cuda:0"),
+)
 ```
 
-The default MTF reference is `"k2_300kV"`, which corresponds to the MTF of a Gatan K2 camera at 300 kV.
+`simulate_potential` accepts any `torch_structure_manipulation.AtomicStructure`,
+including batched positions (e.g. several poses of the same structure).
+
+### Simulation accuracy options
+
+- `upsampling`: the potential is evaluated on a grid `upsampling` times finer
+  and Fourier cropped to the output size to reduce aliasing. By default
+  (`None`) it is 4 above 1.5 Å/pixel, 2 above 0.75 Å/pixel, and 1 otherwise,
+  limited so that the upsampled box stays below 1536 voxels.
+- `sublattice_radius`: radius (Å) of the neighbourhood evaluated around each
+  atom. By default it is chosen so the widest Gaussian term present falls to
+  1e-3 of its peak (see `ttsim3d.auto_sublattice_radius`).
+- `scattering_factors`: `"peng_elemental"` (default) or `"peng_bonded"`
+  (bonding-environment-dependent factors of Shtyrov et al. 2026; the structure
+  is annotated automatically when using `Simulator`).
+
+### Detector MTFs
+
+The detector MTF curves are bundled with `torch-fourier-filter`:
+
+```python
+from torch_fourier_filter.mtf import list_mtf_references
+
+print(list_mtf_references())
+```
+
+Names are case-insensitive. A path to any RELION-style MTF star file also works.
+
+## Command line
+
+Installing the package provides `ttsim3d-cli`:
+
+```zsh
+ttsim3d-cli --structure structure.pdb --pixel-spacing 1.0 --volume-shape 256 256 256 \
+    --mtf k3_standard_300kv_fl2 --device cuda:0 -o simulated.mrc
+
+# or start from a YAML configuration and override some settings
+ttsim3d-cli --config simulation_config.yaml --pixel-spacing 1.5 -o simulated.mrc
+```
+
+Run `ttsim3d-cli --help` for all options.
+
+## Migrating from ttsim3d 0.4
+
+Version 0.5 is a breaking release. See the [CHANGELOG](CHANGELOG.md) for the
+reasons why simulated volumes differ.
+
+| 0.4 | 0.5 |
+|---|---|
+| `from ttsim3d.models import Simulator, SimulatorConfig` | `from ttsim3d import Simulator` |
+| `pdb_filepath`, `center_atoms`, `remove_hydrogens` | `structure.path`, `structure.center`, `structure.remove_hydrogens` |
+| `b_factor_scaling`, `additional_b_factor` | `structure.b_factor_scale`, `structure.b_factor_offset` (B is no longer multiplied by 0.25) |
+| `simulator_config.voltage` | removed (the potential in volts does not depend on it) |
+| `simulator_config.upsampling = -1` | `potential.upsampling = None` |
+| `simulator_config.atom_batch_size` | `potential.batch_size` |
+| `apply_dose_weighting`, `dose_start`, `dose_end` | `dose_filter = {start, end}` or `None` |
+| `crit_exposure_bfactor = -1` | `dose_filter.critical_bfactor = None` |
+| `dose_filter_modify_signal = "None"` | `dose_filter.modify_signal = "none"` |
+| `apply_dqe`, `mtf_reference` | `mtf = <name or path>` or `None` |
+| `store_volume`, `Simulator.volume` | removed; use the return value of `run()` |
+| `run(device=0)` or `run(device=[0, 1])` | `run(device="cuda:0")` |
+| `ttsim3d.simulate3d.simulate3d(...)` | `ttsim3d.simulate_potential(...)` + `ttsim3d.apply_fourier_filters(...)` |
+| `ttsim3d-cli --pdb-filepath ... --mrc-filepath ...` | `ttsim3d-cli --structure ... -o ...` |

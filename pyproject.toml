@@ -17,9 +17,9 @@ sources = ["src"]
 [project]
 name = "ttsim3d"
 dynamic = ["version"]
-description = "Simulate a 3D electrostatic potential map from a PDB in pyTorch"
+description = "Simulate 3D electrostatic potential maps from atomic structures in PyTorch"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = { text = "BSD-3-Clause" }
 authors = [
     { name = "Josh Dickerson", email = "jdickerson@berkeley.edu" },
@@ -30,7 +30,6 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "License :: OSI Approved :: BSD License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -39,31 +38,38 @@ classifiers = [
 ]
 # add your package dependencies here
 dependencies = [
-    "torch",
-    "einops",
-    "torch-grid-utils",
-    "starfile",
-    "scipy",
-    "mrcfile",
-    "pydantic",
-    "mmdf",
-    "requests",
-    "torch-fourier-filter>=0.2.4",
-    "torch-ctf",
-    "pydantic",
     "click",
-    "psutil",
-    "teamtomo-basemodel",
+    "mmdf",
+    "mrcfile",
+    "numpy",
+    "pydantic>=2",
+    "pyyaml",
+    "teamtomo-basemodel>=0.6",
+    "torch",
+    "torch-calculate-electrostatic-potential>=0.6.1",
+    "torch-fourier-filter>=0.6.1",
+    "torch-fourier-rescale>=0.6.1",
+    "torch-structure-manipulation>=0.6",
 ]
 
 [tool.hatch.metadata]
 allow-direct-references = true
+
+# TODO(before release): remove once torch-calculate-electrostatic-potential,
+# torch-fourier-filter, and torch-fourier-rescale v0.6.1 are published
+# (GridConfig.from_fft_centered, bundled MTF references, odd-size centering fix).
+# Local development against the upstream branches.
+[tool.uv.sources]
+torch-calculate-electrostatic-potential = { path = "../teamtomo-worktrees/tcep-fft-centered-grid/packages/primitives/torch-calculate-electrostatic-potential", editable = true }
+torch-fourier-filter = { path = "../teamtomo-worktrees/fourier-filter-mtf-registry/packages/primitives/torch-fourier-filter", editable = true }
+torch-fourier-rescale = { path = "../teamtomo-worktrees/fourier-rescale-odd-centering/packages/primitives/torch-fourier-rescale", editable = true }
 
 # https://peps.python.org/pep-0621/#dependencies-optional-dependencies
 # "extras" (e.g. for `pip install .[test]`)
 [project.optional-dependencies]
 # add dependencies used for testing here
 test = ["pytest", "pytest-cov", "requests"]
+
 # add anything else you like to have in your dev environment here
 dev = [
     "ipython",
@@ -82,7 +88,7 @@ repository = "https://github.com/jdickerson95/ttsim3d"
 # https://peps.python.org/pep-0621/#entry-points
 # same as console_scripts entry point
 [project.scripts]
-ttsim3d-cli = "programs.run_ttsim3d:run_simulation_cli"
+ttsim3d-cli = "ttsim3d.cli:main"
 
 # [project.entry-points."some.group"]
 # tomatoes = "ttsim3d:main_tomatoes"
@@ -90,7 +96,7 @@ ttsim3d-cli = "programs.run_ttsim3d:run_simulation_cli"
 # https://docs.astral.sh/ruff
 [tool.ruff]
 line-length = 88
-target-version = "py39"
+target-version = "py311"
 src = ["src"]
 
 # https://docs.astral.sh/ruff/rules
@@ -125,17 +131,12 @@ skip-magic-trailing-comma = false # default is false
 
 # https://mypy.readthedocs.io/en/stable/config_file.html
 [tool.mypy]
-files = "src/**/"
+files = "src/ttsim3d"
 strict = true
 disallow_any_generics = false
 disallow_subclassing_any = false
 show_error_codes = true
 pretty = true
-
-# # module specific overrides
-# [[tool.mypy.overrides]]
-# module = ["numpy.*",]
-# ignore_errors = true
 
 # https://docs.pytest.org/
 [tool.pytest.ini_options]
