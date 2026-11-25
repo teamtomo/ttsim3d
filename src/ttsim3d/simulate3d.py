@@ -1,7 +1,8 @@
 """Simulation of 3D volume and associated helper functions."""
 
+import os
 import warnings
-from typing import Literal, Union
+from typing import Literal, Optional, Union
 
 import einops
 import numpy as np
@@ -11,6 +12,7 @@ from torch_fourier_filter.dose_weight import cumulative_dose_filter_3d
 from torch_fourier_filter.mtf import make_mtf_grid
 
 from ttsim3d.device_handler import calculate_batches, get_device
+from ttsim3d.envelope import load_template_envelope
 from ttsim3d.grid_coords import (
     fourier_rescale_3d_force_size,
     get_atom_voxel_indices,
@@ -24,7 +26,8 @@ from ttsim3d.scattering_potential import (
 BOND_SCALING_FACTOR = 1.043
 PIXEL_OFFSET = 0.5
 MAX_SIZE = 1536
-ALLOWED_DOSE_FILTER_MODIFICATIONS = ["None", "sqrt", "rel_diff"]
+ALLOWED_DOSE_FILTER_MODIFICATIONS = ["None", "sqrt", "rel_diff", "matched"]
+DoseFilterModification = Literal["None", "sqrt", "rel_diff", "matched"]
 MULTI_GPU_WARNING = (
     "Multiple GPU devices were selected, but multi-device execution is not currently "
     "supported by ttsim3d. Defaulting to the first device in the list..."
@@ -57,12 +60,23 @@ def _calculate_lead_term(beam_energy_kev: float, sim_pixel_spacing: float) -> fl
 def _validate_dose_filter_inputs(
     dose_filter_modify_signal: str,
     dose_filter_critical_bfactor: float,
+    dose_filter_frame_weights: Optional[object] = None,
+    dose_filter_template_envelope: Optional[object] = None,
 ) -> None:
     """Ensure dose filter inputs are valid."""
     if dose_filter_modify_signal not in ALLOWED_DOSE_FILTER_MODIFICATIONS:
         raise ValueError(
             f"Invalid dose filter modification method: {dose_filter_modify_signal}. "
             f"Allowed methods are: {ALLOWED_DOSE_FILTER_MODIFICATIONS}"
+        )
+
+    if dose_filter_modify_signal != "matched" and (
+        dose_filter_frame_weights is not None
+        or dose_filter_template_envelope is not None
+    ):
+        raise ValueError(
+            "Frame weights and template envelopes are only used by the 'matched' "
+            f"dose filter; got dose_filter_modify_signal='{dose_filter_modify_signal}'."
         )
 
     if dose_filter_critical_bfactor == -1:
@@ -352,10 +366,12 @@ def calculate_simulation_dose_filter_3d(
     dose_start: float,
     dose_end: float,
     critical_bfactor: float,
-    modify_signal: Literal["None", "sqrt", "rel_diff"],
+    modify_signal: DoseFilterModification,
     rfft: bool = True,
     fftshift: bool = False,
     device: torch.device = None,
+    frame_weights: Union[str, os.PathLike, None] = None,
+    template_envelope: Union[str, os.PathLike, None] = None,
 ) -> torch.Tensor:
     """Helper function to calculate a cumulative dose filter for a simulation.
 
@@ -371,24 +387,51 @@ def calculate_simulation_dose_filter_3d(
         The ending dose for the dose filter in units of e-/A^2.
     critical_bfactor : float
         The critical B factor for the dose filter. If -1, the Grant and
-        Grigorieff (2015) critical exposure dose weighting is used.
-    modify_signal : Literal["None", "sqrt", "rel_diff"]
+        Grigorieff (2015) critical exposure dose weighting is used. Not used by
+        'matched'.
+    modify_signal : Literal["None", "sqrt", "rel_diff", "matched"]
         The method to modify the signal after applying the dose filter. Options
-        are "None", "sqrt", and "rel_diff".
+        are "None", "sqrt", "rel_diff" and "matched".
         - 'None': No modification is applied.'
         - 'sqrt': The square root of the filter is applied.
         - 'rel_diff': Filter becomes 1 - (1 - filter) / (1 + filter).
+        - 'matched': Instead of the Grant and Grigorieff filter, the matched
+          envelope of a sum made with per-frame B-factor weights (see
+          `ttsim3d.envelope.load_template_envelope`). Exposures are physical: no
+          voltage factor is applied.
     rfft : bool
         If True, the filter is returned in rfft format. Default is True.
     fftshift : bool
         If True, the filter is fftshifted. Default is False.
     device : torch.device
         The device to use for the calculation. Default is None.
+    frame_weights : str | os.PathLike | None
+        'matched' only: "default" (or None) for the default per-frame B-factor
+        curve, or the path to a frame weight table JSON, both over frames of
+        1 e-/A^2 covering [dose_start, dose_end].
+    template_envelope : str | os.PathLike | None
+        'matched' only: the path to a template envelope JSON. Takes precedence over
+        `frame_weights` and the dose range.
 
     Returns
     -------
     torch.Tensor
     """
+    if modify_signal == "matched":
+        envelope = load_template_envelope(
+            dose_start=dose_start,
+            dose_end=dose_end,
+            frame_weights=frame_weights,
+            template_envelope=template_envelope,
+        )
+        return envelope.grid(
+            (int(shape[0]), int(shape[1]), int(shape[2])),
+            pixel_spacing,
+            rfft=rfft,
+            fftshift=fftshift,
+            device=device,
+        )
+
     dose_filter = cumulative_dose_filter_3d(
         volume_shape=shape,
         pixel_size=pixel_spacing,
@@ -422,11 +465,13 @@ def apply_simulation_filters(
     apply_dose_weighting: bool,
     dose_start: float,
     dose_end: float,
-    dose_filter_modify_signal: Literal["None", "sqrt", "rel_diff"],
+    dose_filter_modify_signal: DoseFilterModification,
     dose_filter_critical_bfactor: float,
     apply_dqe: bool,
     mtf_frequencies: torch.Tensor,
     mtf_amplitudes: torch.Tensor,
+    dose_filter_frame_weights: Union[str, os.PathLike, None] = None,
+    dose_filter_template_envelope: Union[str, os.PathLike, None] = None,
 ) -> torch.Tensor:
     """Apply filters to the simulated volume.
 
@@ -452,9 +497,10 @@ def apply_simulation_filters(
         The starting dose for the dose weighting filter in units of e-/A^2.
     dose_end : float
         The ending dose for the dose weighting filter in units of e-/A^2.
-    dose_filter_modify_signal : Literal["None", "sqrt", "rel_diff"]
+    dose_filter_modify_signal : Literal["None", "sqrt", "rel_diff", "matched"]
         The method to modify the signal after applying the dose filter. Options
-        are "None", "sqrt", and "rel_diff".
+        are "None", "sqrt", "rel_diff" and "matched" (see
+        `calculate_simulation_dose_filter_3d`).
     dose_filter_critical_bfactor : float
         The critical B factor for the dose filter. If -1, the Grant and
         Grigorieff (2015) critical exposure dose weighting is used.
@@ -467,6 +513,12 @@ def apply_simulation_filters(
     mtf_amplitudes : torch.Tensor
         The amplitudes for the modulation transfer function (MTF) filter at the
         corresponding frequencies.
+    dose_filter_frame_weights : str | os.PathLike | None
+        'matched' only: "default" (or None) for the default per-frame B-factor
+        curve, or the path to a frame weight table JSON.
+    dose_filter_template_envelope : str | os.PathLike | None
+        'matched' only: the path to a template envelope JSON. Takes precedence over
+        `dose_filter_frame_weights` and the dose range.
 
     Returns
     -------
@@ -491,6 +543,8 @@ def apply_simulation_filters(
             rfft=True,
             fftshift=False,
             device=device,
+            frame_weights=dose_filter_frame_weights,
+            template_envelope=dose_filter_template_envelope,
         )
 
         upsampled_volume_rfft *= dose_filter
@@ -540,13 +594,15 @@ def simulate3d(
     apply_dose_weighting: bool = True,
     dose_start: float = 0.0,
     dose_end: float = 30.0,
-    dose_filter_modify_signal: Literal["None", "sqrt", "rel_diff"] = "None",
+    dose_filter_modify_signal: DoseFilterModification = "None",
     dose_filter_critical_bfactor: float = -1,
     apply_dqe: bool = False,
     mtf_frequencies: torch.Tensor = None,
     mtf_amplitudes: torch.Tensor = None,
     device: Union[int, str, list[int], list[str]] = "cuda:0",
     atom_batch_size: int = 16384,  # 2^14
+    dose_filter_frame_weights: Union[str, os.PathLike, None] = None,
+    dose_filter_template_envelope: Union[str, os.PathLike, None] = None,
 ) -> torch.Tensor:
     """Simulate 3D electron scattering volume with requested parameters.
 
@@ -579,13 +635,17 @@ def simulate3d(
         Default is 30.0.
     dose_filter_modify_signal : str
         The method to modify the signal after applying the dose filter. Options
-        are "None", "sqrt", and "rel_diff". Default is "None".
+        are "None", "sqrt", "rel_diff" and "matched". Default is "None".
         - 'None': No modification is applied.
         - 'sqrt': The square root of the filter is applied.
         - 'rel_diff': Filter becomes 1 - (1 - filter) / (1 + filter).
+        - 'matched': Instead of the Grant and Grigorieff filter, the matched
+          envelope of a sum made with per-frame B-factor weights, from
+          `dose_filter_frame_weights` or `dose_filter_template_envelope`.
     dose_filter_critical_bfactor : float
         The critical B factor for the dose filter. Default is -1, which uses
-        the Grant and Grigorieff (2015) critical exposure dose weighting.
+        the Grant and Grigorieff (2015) critical exposure dose weighting. Not
+        used by 'matched'.
     apply_dqe : bool
         If True, apply the detective quantum efficiency (DQE) filter to the
         simulation. If True, both 'mtf_frequencies' and 'mtf_amplitudes' must
@@ -607,6 +667,13 @@ def simulate3d(
         The number of atoms to process (simulate the scattering potentials of) at a
         single time. This is partially controls the memory usage. If -1, the batch size
         calculated automatically. Default is 16384 (2^14).
+    dose_filter_frame_weights : str | os.PathLike | None
+        'matched' only: "default" (or None) for the default per-frame B-factor
+        curve, or the path to a frame weight table JSON, both over frames of
+        1 e-/A^2 covering [dose_start, dose_end].
+    dose_filter_template_envelope : str | os.PathLike | None
+        'matched' only: the path to a template envelope JSON. Takes precedence over
+        `dose_filter_frame_weights` and the dose range.
 
     Returns
     -------
@@ -632,7 +699,10 @@ def simulate3d(
 
     # Validate portions of the input before continuing
     _validate_dose_filter_inputs(
-        dose_filter_modify_signal, dose_filter_critical_bfactor
+        dose_filter_modify_signal,
+        dose_filter_critical_bfactor,
+        dose_filter_frame_weights,
+        dose_filter_template_envelope,
     )
     _validate_dqe_filter_inputs(apply_dqe, mtf_frequencies, mtf_amplitudes)
 
@@ -704,6 +774,8 @@ def simulate3d(
         apply_dqe=apply_dqe,
         mtf_frequencies=mtf_frequencies,
         mtf_amplitudes=mtf_amplitudes,
+        dose_filter_frame_weights=dose_filter_frame_weights,
+        dose_filter_template_envelope=dose_filter_template_envelope,
     )
 
     return final_volume

@@ -48,6 +48,9 @@ dependencies = [
     "pydantic",
     "mmdf",
     "requests",
+    # TODO: pin to the torch-fourier-filter release that contains
+    # teamtomo/teamtomo#203 (torch_fourier_filter.frame_weights), which the
+    # 'matched' dose filter and ttsim3d-refilter need.
     "torch-fourier-filter>=0.2.4",
     "torch-ctf",
     "pydantic",
@@ -83,6 +86,7 @@ repository = "https://github.com/jdickerson95/ttsim3d"
 # same as console_scripts entry point
 [project.scripts]
 ttsim3d-cli = "programs.run_ttsim3d:run_simulation_cli"
+ttsim3d-refilter = "programs.run_refilter:refilter_cli"
 
 # [project.entry-points."some.group"]
 # tomatoes = "ttsim3d:main_tomatoes"

@@ -1,6 +1,6 @@
 """Simple run script."""
 
-from typing import Union
+from typing import Optional, Union
 
 import click
 
@@ -84,11 +84,13 @@ from ttsim3d.models import Simulator, SimulatorConfig
 )
 @click.option(
     "--dose-filter-modify-signal",
-    type=click.Choice(["None", "sqrt", "rel_diff"]),
+    type=click.Choice(["None", "sqrt", "rel_diff", "matched"]),
     default="None",
     help=(
         "Signal modification to apply to the dose filter. Currently supports "
-        "'None', 'sqrt', and 'rel_diff'."
+        "'None', 'sqrt', 'rel_diff' and 'matched'. 'matched' replaces the Grant "
+        "and Grigorieff filter by the matched envelope of a sum made with "
+        "per-frame B-factor weights (see --frame-weights and --template-envelope)."
     ),
 )
 @click.option(
@@ -102,6 +104,27 @@ from ttsim3d.models import Simulator, SimulatorConfig
     type=float,
     default=30.0,
     help="The ending dose in e/A^2. Default is 30.0.",
+)
+@click.option(
+    "--frame-weights",
+    type=str,
+    default=None,
+    help=(
+        "With --dose-filter-modify-signal matched: 'default' for the default "
+        "per-frame B-factor curve, or the path to a frame weight table JSON, both "
+        "over frames of 1 e/A^2 from --dose-start to --dose-end. Default is the "
+        "default curve."
+    ),
+)
+@click.option(
+    "--template-envelope",
+    type=click.Path(dir_okay=False),
+    default=None,
+    help=(
+        "With --dose-filter-modify-signal matched: the path to a template "
+        "envelope JSON (frame weights plus an optional smooth correction). "
+        "Replaces --frame-weights and the dose range."
+    ),
 )
 @click.option(
     "--apply-dqe",
@@ -152,6 +175,8 @@ def run_simulation_cli(
     dose_filter_modify_signal: str,
     dose_start: float,
     dose_end: float,
+    frame_weights: Optional[str],
+    template_envelope: Optional[str],
     apply_dqe: bool,
     mtf_reference: str,
     device: Union[int, list[int], str, list[str]],
@@ -165,6 +190,8 @@ def run_simulation_cli(
         dose_filter_modify_signal=dose_filter_modify_signal,
         dose_start=dose_start,
         dose_end=dose_end,
+        frame_weights=frame_weights,
+        template_envelope=template_envelope,
         apply_dqe=apply_dqe,
         mtf_reference=mtf_reference,
         upsampling=upsampling,

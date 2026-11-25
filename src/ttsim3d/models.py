@@ -5,11 +5,18 @@ import pathlib
 from typing import Annotated, Any, Literal, Optional, Union
 
 import torch
-from pydantic import ConfigDict, Field, field_serializer, field_validator
+from pydantic import (
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 from pydantic.json_schema import SkipJsonSchema
 from teamtomo_basemodel import BaseModelTeamTomo
 from torch_fourier_filter.mtf import read_mtf
 
+from ttsim3d.envelope import DEFAULT_FRAME_WEIGHTS, load_template_envelope
 from ttsim3d.mrc_handler import tensor_to_mrc
 from ttsim3d.pdb_handler import load_model, remove_hydrogens
 from ttsim3d.simulate3d import ALLOWED_DOSE_FILTER_MODIFICATIONS, simulate3d
@@ -61,16 +68,29 @@ class SimulatorConfig(BaseModelTeamTomo):
     crit_exposure_bfactor : float
         B-factor to use in critical exposure calculations. The default is -1
         and corresponds to the fitted critical exposure function in Grant and
-        Grigorieff, 2015.
-    dose_filter_modify_signal : Literal["None", "sqrt", "rel_diff"]
+        Grigorieff, 2015. Must stay -1 with 'matched', which does not use it.
+    dose_filter_modify_signal : Literal["None", "sqrt", "rel_diff", "matched"]
         Signal modification to apply to the dose filter. Currently supports
         - 'None': No modification
         - 'sqrt': x' = sqrt(x)
         - 'rel_diff': x' = 1 - (1 - x) / (1 - x)
+        - 'matched': Replace the Grant and Grigorieff filter by the matched
+          envelope of a sum made with per-frame B-factor weights, from
+          `frame_weights` or `template_envelope`. Exposures are physical (no
+          voltage factor).
     dose_start : float
         The starting dose in e/A^2. The default is 0.0 e/A^2.
     dose_end : float
         The ending dose in e/A^2. The default is 30.0 e/A^2.
+    frame_weights : str | None
+        'matched' only: "default" for the default per-frame B-factor curve, or the
+        path to a frame weight table JSON (e.g. refit for a dataset), both over
+        frames of 1 e/A^2 covering [dose_start, dose_end]. None (the default) is
+        the default curve.
+    template_envelope : str | None
+        'matched' only: the path to a template envelope JSON, holding the frame
+        weights and an optional smooth correction. Replaces `frame_weights` and
+        the dose range; set one or the other.
     apply_dqe : bool
         If True, apply a DQE filter to the simulation.
     mtf_reference : str
@@ -99,9 +119,11 @@ class SimulatorConfig(BaseModelTeamTomo):
     voltage: Annotated[float, Field(ge=0.0)] = 300.0
     apply_dose_weighting: Annotated[bool, Field(default=True)] = True
     crit_exposure_bfactor: float | int = -1
-    dose_filter_modify_signal: Literal["None", "sqrt", "rel_diff"] = "None"
+    dose_filter_modify_signal: Literal["None", "sqrt", "rel_diff", "matched"] = "None"
     dose_start: Annotated[float, Field(ge=0.0)] = 0.0
     dose_end: Annotated[float, Field(ge=0.0)] = 30.0
+    frame_weights: Optional[str] = None
+    template_envelope: Optional[str] = None
     apply_dqe: bool = True
     mtf_reference: str = "k2_300kv"
     upsampling: int = -1
@@ -116,6 +138,80 @@ class SimulatorConfig(BaseModelTeamTomo):
             e += f"Allowed values are: {ALLOWED_DOSE_FILTER_MODIFICATIONS}"
             raise ValueError(e)
         return v
+
+    @field_validator("frame_weights")
+    @classmethod
+    def validate_frame_weights(cls, v: Optional[str]) -> Optional[str]:
+        """Validate model input `frame_weights`."""
+        if v is None or v == DEFAULT_FRAME_WEIGHTS:
+            return v
+        if not os.path.isfile(v):
+            raise ValueError(
+                f"Invalid frame weights: {v}. Use '{DEFAULT_FRAME_WEIGHTS}' or the "
+                "path to a frame weight table JSON file."
+            )
+        return v
+
+    @field_validator("template_envelope")
+    @classmethod
+    def validate_template_envelope(cls, v: Optional[str]) -> Optional[str]:
+        """Validate model input `template_envelope`."""
+        if v is not None and not os.path.isfile(v):
+            raise ValueError(
+                f"Invalid template envelope: {v}. Please provide the path to a "
+                "template envelope JSON file."
+            )
+        return v
+
+    @model_validator(mode="after")
+    def validate_matched_dose_filter(self) -> "SimulatorConfig":
+        """Validate the inputs of the 'matched' dose filter together."""
+        envelope_inputs = (
+            self.frame_weights is not None or self.template_envelope is not None
+        )
+        if self.dose_filter_modify_signal != "matched":
+            if envelope_inputs:
+                raise ValueError(
+                    "frame_weights and template_envelope are only used with "
+                    "dose_filter_modify_signal='matched'."
+                )
+            return self
+
+        if self.frame_weights is not None and self.template_envelope is not None:
+            raise ValueError(
+                "Set frame_weights or template_envelope, not both: a template "
+                "envelope already holds its frame weights."
+            )
+        if envelope_inputs and not self.apply_dose_weighting:
+            raise ValueError(
+                "frame_weights and template_envelope need apply_dose_weighting=True."
+            )
+        if self.crit_exposure_bfactor != -1:
+            raise ValueError(
+                "crit_exposure_bfactor is only used by the Grant and Grigorieff "
+                "dose filter; leave it at -1 with dose_filter_modify_signal="
+                "'matched'."
+            )
+
+        # Read the envelope now, so a bad file or dose range fails before the
+        # simulation rather than after it.
+        if self.apply_dose_weighting:
+            try:
+                load_template_envelope(
+                    dose_start=self.dose_start,
+                    dose_end=self.dose_end,
+                    frame_weights=self.frame_weights,
+                    template_envelope=self.template_envelope,
+                )
+            except KeyError as err:
+                raise ValueError(
+                    f"Invalid matched dose filter inputs: the JSON file has no {err} "
+                    "field."
+                ) from err
+            except (OSError, TypeError, ValueError) as err:
+                raise ValueError(f"Invalid matched dose filter inputs: {err}") from err
+
+        return self
 
     @field_validator("mtf_reference")  # type: ignore
     def validate_mtf_reference(cls, v):
@@ -321,6 +417,8 @@ class Simulator(BaseModelTeamTomo):
             dose_end=self.simulator_config.dose_end,
             dose_filter_modify_signal=self.simulator_config.dose_filter_modify_signal,
             dose_filter_critical_bfactor=self.simulator_config.crit_exposure_bfactor,
+            dose_filter_frame_weights=self.simulator_config.frame_weights,
+            dose_filter_template_envelope=self.simulator_config.template_envelope,
             apply_dqe=self.simulator_config.apply_dqe,
             mtf_frequencies=mtf_frequencies,
             mtf_amplitudes=mtf_amplitudes,
