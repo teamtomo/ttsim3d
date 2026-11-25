@@ -77,7 +77,7 @@ def get_device(
         Device selection preference:
         - 'cpu': Use CPU
         - 'all': Use all available CUDA devices
-        - 'cuda:N' or int N: Use specific CUDA device N
+        - 'cuda:N', int N or 'N': Use specific CUDA device N
         - ['cuda:0', 'cuda:2'] or [0, 2]: Use specific CUDA devices in the list.
 
     Returns
@@ -99,6 +99,9 @@ def get_device(
             for i in device
         ]
     elif isinstance(device, int):
+        devices = [torch.device(f"cuda:{device}")]
+    elif isinstance(device, str) and device.isdigit():
+        # A GPU index given as a string, e.g. "--device 0" on the command line
         devices = [torch.device(f"cuda:{device}")]
     elif isinstance(device, str):
         devices = [torch.device(device)]

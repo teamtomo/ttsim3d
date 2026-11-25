@@ -40,6 +40,8 @@ All options for the program can be printed by running:
 ttsim3d-cli --help
 ```
 
+A second program, `ttsim3d-refilter`, applies a matched dose filter to a map that was already simulated (see [Matched template dose filter](#matched-template-dose-filter)).
+
 <!-- The following are descriptions of each of the options for the program
 
 
@@ -55,11 +57,13 @@ ttsim3d-cli --help
 | `--additional-b-factor`       | float                                 | `0.0`         | Additional B-factor to apply to the atoms in the pdb file. The default is 0.0.
 | `--apply-dose-weighting`      | bool                                  | `True`        | If True, apply dose weighting to the simulation. Default is True.
 | `--crit-exposure-bfactor`     | float                                 | `-1.0`        | B-factor to use in critical exposure calculations. The default is -1 and corresponds to the fitted critical exposure function in Grant and Grigorieff, 2015.
-| `--dose-filter-modify-signal` | Literal["None", "sqrt", "rel_diff"]   | `"None"`      | Signal modification to apply to the dose filter. Currently supports 'None', 'sqrt', and 'rel_diff'.
+| `--dose-filter-modify-signal` | Literal["None", "sqrt", "rel_diff", "matched"] | `"None"` | Signal modification to apply to the dose filter. Currently supports 'None', 'sqrt', 'rel_diff' and 'matched'.
 | `--dose-start`                | float                                 | `0.0`         | The starting dose in e/A^2.
 | `--dose-end`                  | float                                 | `30.0`        | The ending dose in e/A^2.
+| `--frame-weights`             | str                                   | `None`        | With 'matched': 'default' (the default curve) or the path to a frame weight table JSON.
+| `--template-envelope`         | Path                                  | `None`        | With 'matched': the path to a template envelope JSON. Replaces `--frame-weights` and the dose range.
 | `--apply-dqe`                 | bool                                  | `True`        | If True, apply a DQE filter to the simulation.
-| `--mtf-reference`             | Path or str                           | `"k2_300kV"`  | Path to the modulation transfer function (MTF) reference star file, or one of the known MTF reference files. Default is 'k2_300kV'.
+| `--mtf-reference`             | Path or str                           | `"k2_300kv"`  | Path to the modulation transfer function (MTF) reference star file, or one of the known MTF reference files. Default is 'k2_300kv'.
 | `--device`                   | str                             | `"cpu"`        | The device to use for the simulation (e.g., "cpu" for CPU computation, or "cuda:0" or "0" for GPU computation on the zeroth device). -->
 
 ## Python objects
@@ -162,6 +166,54 @@ from ttsim3d.models import Simulator
 sim = Simulator.from_yaml("some/path/to/simulation_config.yaml")
 ```
 
+## Matched template dose filter
+
+By default the simulated map is dose filtered with the Grant & Grigorieff (2015) critical exposure curve, optionally modified by `sqrt` or `rel_diff`.
+When the images are summed with per-frame B-factor weights instead, the template should carry the signal envelope of that sum.
+Setting `dose_filter_modify_signal="matched"` replaces the Grant & Grigorieff filter by that envelope, computed by [`torch_fourier_filter.frame_weights`](https://github.com/teamtomo/teamtomo/tree/main/packages/primitives/torch-fourier-filter).
+The envelope comes from one of:
+
+- `frame_weights="default"` (or left unset): the default per-frame B-factor curve over frames of 1 e/A^2 from `dose_start` to `dose_end`;
+- `frame_weights="path/to/frame_weights.json"`: a frame weight table, e.g. refit for a dataset, resampled to the same frames;
+- `template_envelope="path/to/template_envelope.json"`: a complete envelope with its own frame weights and an optional smooth correction. It replaces `frame_weights` and the dose range.
+
+Exposures are physical (e/A^2), with no voltage factor at 200 kV, and `crit_exposure_bfactor` is not used.
+
+```python
+from ttsim3d.models import SimulatorConfig
+
+sim_conf = SimulatorConfig(
+    voltage=300.0,
+    apply_dose_weighting=True,
+    dose_filter_modify_signal="matched",
+    frame_weights="default",  # or a frame weight table JSON
+    dose_start=0.0,  # in e-/A^2
+    dose_end=40.0,   # in e-/A^2
+)
+```
+
+or on the command line:
+```zsh
+ttsim3d-cli --pdb-filepath structure.pdb --mrc-filepath template_matched.mrc \
+    --pixel-spacing 1.0 --volume-shape 512 512 512 \
+    --dose-filter-modify-signal matched --frame-weights default --dose-start 0 --dose-end 40
+```
+
+### Refiltering an existing map
+
+`ttsim3d-refilter` applies the same envelope to a map simulated without dose weighting, so a template can follow new frame weights without being simulated again.
+The output gets the input's voxel size.
+```zsh
+ttsim3d-cli --pdb-filepath structure.pdb --mrc-filepath template_nodose.mrc \
+    --pixel-spacing 1.0 --volume-shape 512 512 512 --apply-dose-weighting False
+
+ttsim3d-refilter --input-mrc template_nodose.mrc --output-mrc template_matched.mrc \
+    --template-envelope template_envelope.json
+# or: --frame-weights default --dose-start 0 --dose-end 40
+```
+
+The same is available in Python as `ttsim3d.envelope.load_template_envelope` and `ttsim3d.envelope.refilter_mrc`.
+
 ## Included MTF reference files
 
 Users can specify MTF reference by a path to a star file under the `SimulatorConfig.mtf_reference` parameter.
@@ -176,4 +228,4 @@ from ttsim3d import models
 print(models.included_mtf_references())
 ```
 
-The default MTF reference is `"k2_300kV"`, which corresponds to the MTF of a Gatan K2 camera at 300 kV.
+The default MTF reference is `"k2_300kv"`, which corresponds to the MTF of a Gatan K2 camera at 300 kV.

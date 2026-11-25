@@ -34,6 +34,13 @@ class TestGetDevice:
         assert devices[0].type == "cuda"
         assert devices[0].index == 0
 
+    def test_cuda_single_device_by_digit_string(self):
+        """A GPU index as a string, as the CLIs receive it ('--device 0')."""
+        devices = get_device("1")
+        assert len(devices) == 1
+        assert devices[0].type == "cuda"
+        assert devices[0].index == 1
+
     def test_cuda_single_device_by_string(self):
         """Test requesting a single CUDA device by string."""
         if torch.cuda.device_count() == 0:
