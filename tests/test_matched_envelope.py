@@ -360,17 +360,50 @@ def test_refilter_cli_template_envelope(tmp_path, envelope_json):
     [
         ["--frame-weights", "default"],  # both sources
         ["--dose-end", "40"],  # a dose range the envelope does not use
-        ["--frame-weights", "defualt"],
+        ["--frame-weights", "Default"],
     ],
 )
 def test_refilter_cli_rejects_bad_combinations(tmp_path, envelope_json, extra):
     _write_toy_mrc(tmp_path / "in.mrc")
     args = ["--input-mrc", str(tmp_path / "in.mrc"), "--output-mrc", "x.mrc"]
-    if extra[1] != "defualt":
+    if extra[1] != "Default":
         args += ["--template-envelope", str(envelope_json)]
     result = CliRunner().invoke(refilter_cli, args + extra)
     assert result.exit_code == 2, result.output
     assert not (tmp_path / "x.mrc").exists()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+@pytest.mark.parametrize("device", ["cuda:0", "cuda", "0"])
+def test_refilter_cli_cuda_matches_cpu(tmp_path, envelope_json, device):
+    _write_toy_mrc(tmp_path / "in.mrc", voxel_size=0.95)
+    outputs = {}
+    for dev in ("cpu", device):
+        out = tmp_path / f"out_{dev.replace(':', '')}.mrc"
+        result = CliRunner().invoke(
+            refilter_cli,
+            [
+                "--input-mrc", str(tmp_path / "in.mrc"),
+                "--output-mrc", str(out),
+                "--template-envelope", str(envelope_json),
+                "--device", dev,
+            ],
+        )  # fmt: skip
+        assert result.exit_code == 0, result.output
+        outputs[dev] = _read_mrc(out)[0]
+    torch.testing.assert_close(outputs[device], outputs["cpu"], rtol=1e-4, atol=1e-5)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def test_apply_template_envelope_cuda(envelope_json):
+    envelope = fw.TemplateEnvelope.from_json(envelope_json)
+    volume = torch.randn(SHAPE)
+    on_gpu = apply_template_envelope(volume.cuda(), envelope, PIXEL)
+    assert on_gpu.device.type == "cuda"
+    torch.testing.assert_close(
+        on_gpu.cpu(), apply_template_envelope(volume, envelope, PIXEL),
+        rtol=1e-4, atol=1e-5,
+    )  # fmt: skip
 
 
 def test_refilter_mrc_voxel_size(tmp_path):
@@ -435,7 +468,7 @@ def test_config_yaml_round_trip(tmp_path, table_json):
         # one source for the envelope
         ({"frame_weights": "TABLE", "template_envelope": "ENV"}, "not both"),
         # files must exist and parse
-        ({"frame_weights": "defualt"}, "Invalid frame weights"),
+        ({"frame_weights": "Default"}, "Invalid frame weights"),
         ({"frame_weights": "MISSING"}, "Invalid frame weights"),
         ({"template_envelope": "MISSING"}, "Invalid template envelope"),
         ({"frame_weights": "BAD"}, "has no 'exposure_start' field"),

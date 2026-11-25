@@ -78,7 +78,10 @@ def matched_frame_exposures(
     from torch_fourier_filter.frame_weights import frame_exposures
 
     n_frames = max(1, round((dose_end - dose_start) / MATCHED_DOSE_PER_FRAME))
-    return frame_exposures(n_frames, dose_start, (dose_end - dose_start) / n_frames)
+    start, end = frame_exposures(
+        n_frames, dose_start, (dose_end - dose_start) / n_frames
+    )
+    return start, end
 
 
 def _warn_if_outside_table(
@@ -180,9 +183,11 @@ def apply_template_envelope(
     if volume.ndim != 3:
         raise ValueError(f"Expected a 3D volume; got shape {tuple(volume.shape)}.")
     shape = (int(volume.shape[0]), int(volume.shape[1]), int(volume.shape[2]))
+    # .to(): the grid must sit on the volume's device even if a torch-grid-utils /
+    # torch-fourier-filter build returns it on the CPU
     envelope_grid = envelope.grid(
         shape, pixel_spacing, rfft=True, fftshift=False, device=volume.device
-    )
+    ).to(volume.device)
     volume_rfft = torch.fft.rfftn(volume, dim=(-3, -2, -1))
     volume_rfft *= envelope_grid
     filtered: torch.Tensor = torch.fft.irfftn(volume_rfft, s=shape, dim=(-3, -2, -1))
