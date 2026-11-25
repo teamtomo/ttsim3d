@@ -96,7 +96,7 @@ class SimulatorConfig(BaseModelTeamTomo):
     mtf_reference : str
         Path to the modulation transfer function (MTF) reference star file, or
         one of the known MTF reference files in:
-        - 'k2_300kV': The MTF reference for a K2 camera at 300 kV.
+        - 'k2_300kv': The MTF reference for a K2 camera at 300 kV.
     upsampling : int
         The upsampling factor to apply to the simulation. The default is -1 and
         corresponds to automatic calculation of the upsampling factor.

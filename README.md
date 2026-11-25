@@ -63,7 +63,7 @@ A second program, `ttsim3d-refilter`, applies a matched dose filter to a map tha
 | `--frame-weights`             | str                                   | `None`        | With 'matched': 'default' (the default curve) or the path to a frame weight table JSON.
 | `--template-envelope`         | Path                                  | `None`        | With 'matched': the path to a template envelope JSON. Replaces `--frame-weights` and the dose range.
 | `--apply-dqe`                 | bool                                  | `True`        | If True, apply a DQE filter to the simulation.
-| `--mtf-reference`             | Path or str                           | `"k2_300kV"`  | Path to the modulation transfer function (MTF) reference star file, or one of the known MTF reference files. Default is 'k2_300kV'.
+| `--mtf-reference`             | Path or str                           | `"k2_300kv"`  | Path to the modulation transfer function (MTF) reference star file, or one of the known MTF reference files. Default is 'k2_300kv'.
 | `--device`                   | str                             | `"cpu"`        | The device to use for the simulation (e.g., "cpu" for CPU computation, or "cuda:0" or "0" for GPU computation on the zeroth device). -->
 
 ## Python objects
@@ -228,4 +228,4 @@ from ttsim3d import models
 print(models.included_mtf_references())
 ```
 
-The default MTF reference is `"k2_300kV"`, which corresponds to the MTF of a Gatan K2 camera at 300 kV.
+The default MTF reference is `"k2_300kv"`, which corresponds to the MTF of a Gatan K2 camera at 300 kV.
