@@ -1,10 +1,12 @@
 """Simple run script."""
 
-from typing import Union
+from typing import Optional, Union
 
 import click
+from click.core import ParameterSource
 
 from ttsim3d.models import Simulator, SimulatorConfig
+from ttsim3d.solvent import WATER_SOLVENT_DENSITY
 
 
 @click.command()
@@ -138,6 +140,37 @@ from ttsim3d.models import Simulator, SimulatorConfig
         "size calculated automatically. Default is 16384 (2^14)."
     ),
 )
+@click.option(
+    "--subtract-solvent",
+    is_flag=True,
+    help=(
+        "Subtract the solvent the molecule displaces: the map becomes "
+        "A - rho * E, where A is the potential before the dose filter and MTF, E "
+        "is the molecule's solvent-excluded volume scaled to the mean of A inside "
+        "it, and rho is --solvent-density. The dose filter and MTF act on the "
+        "difference."
+    ),
+)
+@click.option(
+    "--solvent-density",
+    type=click.FloatRange(min=0.0),
+    default=WATER_SOLVENT_DENSITY,
+    help=(
+        "With --subtract-solvent: the solvent's potential as a fraction of the "
+        "molecule's mean potential. Default is 0.6 (water against protein and "
+        "RNA); crowded cytoplasm is around 0.6-0.72."
+    ),
+)
+@click.option(
+    "--excluded-volume-mrc",
+    type=click.Path(dir_okay=False),
+    default=None,
+    help=(
+        "Also write the displaced solvent E to this file, scaled and filtered "
+        "exactly as it enters the map, so that a map for any rho is "
+        "(the map without --subtract-solvent) - rho * E."
+    ),
+)
 def run_simulation_cli(
     pdb_filepath: str,
     mrc_filepath: str,
@@ -156,8 +189,18 @@ def run_simulation_cli(
     mtf_reference: str,
     device: Union[int, list[int], str, list[str]],
     atom_batch_size: int,
+    subtract_solvent: bool,
+    solvent_density: float,
+    excluded_volume_mrc: Optional[str],
 ) -> None:
     """Run a structure simulation through the CLI."""
+    ctx = click.get_current_context()
+    source = ctx.get_parameter_source("solvent_density")
+    if source == ParameterSource.COMMANDLINE and not subtract_solvent:
+        raise click.UsageError(
+            "--solvent-density is only used with --subtract-solvent."
+        )
+
     simulator_config = SimulatorConfig(
         voltage=voltage,
         apply_dose_weighting=apply_dose_weighting,
@@ -169,6 +212,8 @@ def run_simulation_cli(
         mtf_reference=mtf_reference,
         upsampling=upsampling,
         atom_batch_size=atom_batch_size,
+        subtract_solvent=subtract_solvent,
+        solvent_density=solvent_density,
     )
     simulator = Simulator(
         pixel_spacing=pixel_spacing,
@@ -178,7 +223,11 @@ def run_simulation_cli(
         additional_b_factor=additional_b_factor,
         simulator_config=simulator_config,
     )
-    simulator.export_to_mrc(device=device, mrc_filepath=mrc_filepath)
+    simulator.export_to_mrc(
+        device=device,
+        mrc_filepath=mrc_filepath,
+        excluded_volume_filepath=excluded_volume_mrc,
+    )
 
 
 if __name__ == "__main__":

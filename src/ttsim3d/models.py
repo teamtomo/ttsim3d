@@ -2,7 +2,7 @@
 
 import os
 import pathlib
-from typing import Annotated, Any, Literal, Optional, Union
+from typing import Annotated, Any, Literal, Optional, Union, overload
 
 import torch
 from pydantic import ConfigDict, Field, field_serializer, field_validator
@@ -13,6 +13,7 @@ from torch_fourier_filter.mtf import read_mtf
 from ttsim3d.mrc_handler import tensor_to_mrc
 from ttsim3d.pdb_handler import load_model, remove_hydrogens
 from ttsim3d.simulate3d import ALLOWED_DOSE_FILTER_MODIFICATIONS, simulate3d
+from ttsim3d.solvent import WATER_SOLVENT_DENSITY
 
 _data_dir = pathlib.Path(__file__).parent / "data"
 DEFAULT_MTF_REFERENCES = {
@@ -87,6 +88,16 @@ class SimulatorConfig(BaseModelTeamTomo):
     atom_batch_size : int
         The number of atoms to simulate in a single batch. The default is 16384
         (2^14).
+    subtract_solvent : bool
+        If True, subtract the solvent the molecule displaces: the volume becomes
+        A - solvent_density * E, where A is the potential before any dose or MTF
+        filter and E is the molecule's solvent-excluded volume scaled to the mean
+        of A inside it (see `ttsim3d.solvent`). The dose filter and MTF act on the
+        difference. Default is False.
+    solvent_density : float
+        The solvent's potential as a fraction of the molecule's mean potential,
+        used with `subtract_solvent`. The default 0.6 is water against protein and
+        RNA; crowded cytoplasm is around 0.6-0.72. 0 leaves the volume unchanged.
 
     Methods
     -------
@@ -107,6 +118,10 @@ class SimulatorConfig(BaseModelTeamTomo):
     upsampling: int = -1
     store_volume: bool = True
     atom_batch_size: int = 16384  # 2^14
+    subtract_solvent: bool = False
+    solvent_density: Annotated[float, Field(ge=0.0, allow_inf_nan=False)] = (
+        WATER_SOLVENT_DENSITY
+    )
 
     @field_validator("dose_filter_modify_signal")  # type: ignore
     def validate_dose_filter_modify_signal(cls, v):
@@ -180,6 +195,11 @@ class Simulator(BaseModelTeamTomo):
         The simulated volume in real space after requested simulation filters
         are applied. Non-serializable attribute. Only stored if requested in
         the SimulatorConfig.
+    excluded_volume : torch.Tensor
+        The displaced solvent E, scaled and filtered as it enters the volume, from
+        the last run that computed it (`return_excluded_volume=True`).
+        Non-serializable attribute. Only stored if `store_volume` is True in the
+        SimulatorConfig.
 
     Methods
     -------
@@ -218,6 +238,7 @@ class Simulator(BaseModelTeamTomo):
     atom_identities: ExcludedTensor
     atom_b_factors: ExcludedTensor
     volume: ExcludedTensor
+    excluded_volume: ExcludedTensor
 
     @field_serializer("volume_shape")
     def serialize_volume_shape(self, value: tuple[int, int, int]) -> list[int]:
@@ -267,11 +288,29 @@ class Simulator(BaseModelTeamTomo):
 
         return b_fac
 
+    @overload
+    def run(
+        self,
+        device: Union[int, list[int], str, list[str]] = ...,
+        atom_indices: Optional[torch.Tensor] = ...,
+        return_excluded_volume: Literal[False] = ...,
+    ) -> torch.Tensor: ...
+
+    @overload
+    def run(
+        self,
+        device: Union[int, list[int], str, list[str]] = ...,
+        atom_indices: Optional[torch.Tensor] = ...,
+        *,
+        return_excluded_volume: Literal[True],
+    ) -> tuple[torch.Tensor, torch.Tensor]: ...
+
     def run(
         self,
         device: Union[int, list[int], str, list[str]] = "cpu",
         atom_indices: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
+        return_excluded_volume: bool = False,
+    ) -> Union[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         """Runs the simulation and returns the simulated volume.
 
         Parameters
@@ -284,11 +323,17 @@ class Simulator(BaseModelTeamTomo):
         atom_indices: torch.Tensor
             The indices of the atoms to simulate. The default is 'None' which
             will simulate all atoms in the structure.
+        return_excluded_volume: bool
+            If True, also return the displaced solvent E, scaled and filtered
+            exactly as it enters the volume, whether or not `subtract_solvent` is
+            set. The volume for any solvent density rho is then
+            (the volume without solvent subtraction) - rho * E. Default is False.
 
         Returns
         -------
         volume: torch.Tensor
-            The simulated volume.
+            The simulated volume; with `return_excluded_volume`, the tuple
+            (volume, E).
         """
         assert self.atom_positions_zyx is not None, "No atom positions loaded."
         assert self.atom_identities is not None, "No atom identities loaded."
@@ -308,36 +353,50 @@ class Simulator(BaseModelTeamTomo):
         # Calculate the mtf_frequencies and mtf_amplitudes from reference file
         mtf_frequencies, mtf_amplitudes = self.simulator_config.mtf_tensors
 
-        volume = simulate3d(
-            atom_positions_zyx=self.atom_positions_zyx[atom_indices],
-            atom_ids=atom_ids,
-            atom_b_factors=atom_b_factors[atom_indices],
-            beam_energy_kev=self.simulator_config.voltage,
-            sim_pixel_spacing=self.pixel_spacing,
-            sim_volume_shape=self.volume_shape,
-            requested_upsampling=self.simulator_config.upsampling,
-            apply_dose_weighting=self.simulator_config.apply_dose_weighting,
-            dose_start=self.simulator_config.dose_start,
-            dose_end=self.simulator_config.dose_end,
-            dose_filter_modify_signal=self.simulator_config.dose_filter_modify_signal,
-            dose_filter_critical_bfactor=self.simulator_config.crit_exposure_bfactor,
-            apply_dqe=self.simulator_config.apply_dqe,
-            mtf_frequencies=mtf_frequencies,
-            mtf_amplitudes=mtf_amplitudes,
-            device=device,
-            atom_batch_size=self.simulator_config.atom_batch_size,
+        config = self.simulator_config
+        simulation_kwargs: dict[str, Any] = {
+            "atom_positions_zyx": self.atom_positions_zyx[atom_indices],
+            "atom_ids": atom_ids,
+            "atom_b_factors": atom_b_factors[atom_indices],
+            "beam_energy_kev": config.voltage,
+            "sim_pixel_spacing": self.pixel_spacing,
+            "sim_volume_shape": self.volume_shape,
+            "requested_upsampling": config.upsampling,
+            "apply_dose_weighting": config.apply_dose_weighting,
+            "dose_start": config.dose_start,
+            "dose_end": config.dose_end,
+            "dose_filter_modify_signal": config.dose_filter_modify_signal,
+            "dose_filter_critical_bfactor": config.crit_exposure_bfactor,
+            "apply_dqe": config.apply_dqe,
+            "mtf_frequencies": mtf_frequencies,
+            "mtf_amplitudes": mtf_amplitudes,
+            "device": device,
+            "atom_batch_size": config.atom_batch_size,
+            "solvent_density": (
+                config.solvent_density if config.subtract_solvent else 0.0
+            ),
+        }
+
+        if not return_excluded_volume:
+            volume: torch.Tensor = simulate3d(**simulation_kwargs)
+            if config.store_volume:
+                self.volume = volume
+            return volume
+
+        volume, excluded_volume = simulate3d(
+            **simulation_kwargs, return_excluded_volume=True
         )
-
-        if self.simulator_config.store_volume:
+        if config.store_volume:
             self.volume = volume
-
-        return volume
+            self.excluded_volume = excluded_volume
+        return volume, excluded_volume
 
     def export_to_mrc(
         self,
         mrc_filepath: str | os.PathLike,
         device: Union[int, list[int], str, list[str]] = "cpu",
         atom_indices: Optional[torch.Tensor] = None,
+        excluded_volume_filepath: Optional[Union[str, os.PathLike]] = None,
     ) -> None:
         """Exports the simulated volume to an MRC file.
 
@@ -354,12 +413,27 @@ class Simulator(BaseModelTeamTomo):
             The indices of the atoms to simulate. The default is 'None' which
             will simulate all atoms in the structure. This is passed to the
             `run` method.
+        excluded_volume_filepath: str | os.PathLike | None
+            If given, also write the displaced solvent E to this MRC file, scaled
+            and filtered exactly as it enters the volume (see `run`). The volume for
+            any solvent density rho is then (the volume without solvent
+            subtraction) - rho * E. Default is None.
 
         Returns
         -------
         None
         """
-        volume = self.run(device=device, atom_indices=atom_indices)
+        if excluded_volume_filepath is None:
+            volume = self.run(device=device, atom_indices=atom_indices)
+        else:
+            volume, excluded_volume = self.run(
+                device=device, atom_indices=atom_indices, return_excluded_volume=True
+            )
+            tensor_to_mrc(
+                output_filename=str(excluded_volume_filepath),
+                final_volume=excluded_volume,
+                sim_pixel_spacing=self.pixel_spacing,
+            )
 
         tensor_to_mrc(
             output_filename=str(mrc_filepath),

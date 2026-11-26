@@ -1,7 +1,8 @@
 """Simulation of 3D volume and associated helper functions."""
 
+import math
 import warnings
-from typing import Literal, Union
+from typing import Literal, Union, overload
 
 import einops
 import numpy as np
@@ -20,6 +21,7 @@ from ttsim3d.grid_coords import (
 from ttsim3d.scattering_potential import (
     get_scattering_potential_of_voxel_batch,
 )
+from ttsim3d.solvent import mean_inside_excluded_volume, solvent_excluded_volume
 
 BOND_SCALING_FACTOR = 1.043
 PIXEL_OFFSET = 0.5
@@ -529,6 +531,56 @@ def apply_simulation_filters(
     return cropped_volume
 
 
+@overload
+def simulate3d(
+    atom_positions_zyx: torch.Tensor,
+    atom_ids: list[str],
+    atom_b_factors: torch.Tensor,
+    beam_energy_kev: float,
+    sim_pixel_spacing: float,
+    sim_volume_shape: tuple[int, int, int],
+    requested_upsampling: int = ...,
+    apply_dose_weighting: bool = ...,
+    dose_start: float = ...,
+    dose_end: float = ...,
+    dose_filter_modify_signal: Literal["None", "sqrt", "rel_diff"] = ...,
+    dose_filter_critical_bfactor: float = ...,
+    apply_dqe: bool = ...,
+    mtf_frequencies: torch.Tensor = ...,
+    mtf_amplitudes: torch.Tensor = ...,
+    device: Union[int, str, list[int], list[str]] = ...,
+    atom_batch_size: int = ...,
+    *,
+    solvent_density: float = ...,
+    return_excluded_volume: Literal[False] = ...,
+) -> torch.Tensor: ...
+
+
+@overload
+def simulate3d(
+    atom_positions_zyx: torch.Tensor,
+    atom_ids: list[str],
+    atom_b_factors: torch.Tensor,
+    beam_energy_kev: float,
+    sim_pixel_spacing: float,
+    sim_volume_shape: tuple[int, int, int],
+    requested_upsampling: int = ...,
+    apply_dose_weighting: bool = ...,
+    dose_start: float = ...,
+    dose_end: float = ...,
+    dose_filter_modify_signal: Literal["None", "sqrt", "rel_diff"] = ...,
+    dose_filter_critical_bfactor: float = ...,
+    apply_dqe: bool = ...,
+    mtf_frequencies: torch.Tensor = ...,
+    mtf_amplitudes: torch.Tensor = ...,
+    device: Union[int, str, list[int], list[str]] = ...,
+    atom_batch_size: int = ...,
+    *,
+    solvent_density: float = ...,
+    return_excluded_volume: Literal[True],
+) -> tuple[torch.Tensor, torch.Tensor]: ...
+
+
 def simulate3d(
     atom_positions_zyx: torch.Tensor,
     atom_ids: list[str],
@@ -547,7 +599,10 @@ def simulate3d(
     mtf_amplitudes: torch.Tensor = None,
     device: Union[int, str, list[int], list[str]] = "cuda:0",
     atom_batch_size: int = 16384,  # 2^14
-) -> torch.Tensor:
+    *,
+    solvent_density: float = 0.0,
+    return_excluded_volume: bool = False,
+) -> Union[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
     """Simulate 3D electron scattering volume with requested parameters.
 
     Parameters
@@ -607,12 +662,31 @@ def simulate3d(
         The number of atoms to process (simulate the scattering potentials of) at a
         single time. This is partially controls the memory usage. If -1, the batch size
         calculated automatically. Default is 16384 (2^14).
+    solvent_density : float
+        Subtract the solvent the molecule displaces: the volume becomes
+        A - solvent_density * E, where A is the potential before any dose or MTF
+        filter and E is the molecule's solvent-excluded volume
+        (`ttsim3d.solvent.solvent_excluded_volume`, hydrogens dropped) scaled to
+        the mean of A inside it. The dose filter and MTF then act on
+        A - solvent_density * E. 0.6 is water against protein and RNA; crowded
+        cytoplasm is around 0.6-0.72. Default is 0.0: nothing is subtracted and
+        the output is unchanged. Keyword only.
+    return_excluded_volume : bool
+        If True, also return E, scaled and filtered exactly as it enters the
+        volume. The volume for any solvent density rho is then
+        (the volume at solvent density 0) - rho * E. Default is False. Keyword only.
 
     Returns
     -------
-    torch.Tensor
-        The simulated 3D volume in real space.
+    torch.Tensor | tuple[torch.Tensor, torch.Tensor]
+        The simulated 3D volume in real space; with `return_excluded_volume`, the
+        tuple (volume, E).
     """
+    if not math.isfinite(solvent_density) or solvent_density < 0:
+        raise ValueError(
+            f"solvent_density must be a finite number >= 0; got {solvent_density}."
+        )
+
     # Get compute device
     device = get_device(device)
     if isinstance(device, list) and len(device) > 1:
@@ -706,4 +780,53 @@ def simulate3d(
         mtf_amplitudes=mtf_amplitudes,
     )
 
+    if solvent_density == 0.0 and not return_excluded_volume:
+        return final_volume
+
+    # The displaced solvent E on the final grid, scaled to the mean of the
+    # unfiltered potential A inside it, then through the same dose filter and MTF
+    # as A. The filters are linear, so final_volume - rho * E is the filtered
+    # A - rho * E, and final_volume itself stays exactly as without the solvent.
+    potential = apply_simulation_filters(
+        upsampled_volume=upsampled_volume,
+        actual_upsampling=actual_upsampling,
+        upsampled_pixel_size=setup_results["upsampled_pixel_size"],
+        final_shape=sim_volume_shape,
+        apply_dose_weighting=False,
+        dose_start=dose_start,
+        dose_end=dose_end,
+        dose_filter_modify_signal=dose_filter_modify_signal,
+        dose_filter_critical_bfactor=dose_filter_critical_bfactor,
+        apply_dqe=False,
+        mtf_frequencies=mtf_frequencies,
+        mtf_amplitudes=mtf_amplitudes,
+    )
+    del upsampled_volume
+    excluded_volume = solvent_excluded_volume(
+        atom_positions_zyx=atom_positions_zyx,
+        atom_ids=atom_ids,
+        pixel_spacing=sim_pixel_spacing,
+        volume_shape=sim_volume_shape,
+    )
+    excluded_volume *= mean_inside_excluded_volume(potential, excluded_volume)
+    del potential
+    excluded_volume = apply_simulation_filters(
+        upsampled_volume=excluded_volume,
+        actual_upsampling=1,
+        upsampled_pixel_size=sim_pixel_spacing,
+        final_shape=sim_volume_shape,
+        apply_dose_weighting=apply_dose_weighting,
+        dose_start=dose_start,
+        dose_end=dose_end,
+        dose_filter_modify_signal=dose_filter_modify_signal,
+        dose_filter_critical_bfactor=dose_filter_critical_bfactor,
+        apply_dqe=apply_dqe,
+        mtf_frequencies=mtf_frequencies,
+        mtf_amplitudes=mtf_amplitudes,
+    )
+
+    if solvent_density != 0.0:
+        final_volume = final_volume - solvent_density * excluded_volume
+    if return_excluded_volume:
+        return final_volume, excluded_volume
     return final_volume
