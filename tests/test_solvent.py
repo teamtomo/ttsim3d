@@ -9,7 +9,6 @@ import pytest
 import torch
 from click.testing import CliRunner
 from pydantic import ValidationError
-from scipy import ndimage
 from scipy.special import erfc
 from src.programs.run_ttsim3d import run_simulation_cli
 from torch_fourier_filter.mtf import read_mtf
@@ -17,10 +16,8 @@ from torch_fourier_filter.mtf import read_mtf
 from ttsim3d.models import DEFAULT_MTF_REFERENCES, Simulator, SimulatorConfig
 from ttsim3d.simulate3d import apply_simulation_filters, simulate3d
 from ttsim3d.solvent import (
-    DEFAULT_UNITED_ATOM_RADIUS,
     UNITED_ATOM_RADII,
     WATER_SOLVENT_DENSITY,
-    _squared_distance_to_mask,
     mean_inside_excluded_volume,
     solvent_excluded_volume,
 )
@@ -29,6 +26,7 @@ DEVICES = ["cpu"] + (["cuda:0"] if torch.cuda.is_available() else [])
 ELEMENTS = ["C", "N", "O", "C", "S", "P", "H", "MG", "C", "N", "O"]
 PIXEL = 0.8  # auto upsampling is 2 here, so the upsampled path is tested
 SHAPE = (32, 32, 32)
+PROBE, SIGMA = 1.4, 0.5
 
 
 @pytest.fixture
@@ -90,21 +88,49 @@ def simulation_kwargs(device: str, dose: bool = True, mtf: bool = True) -> dict:
     return kwargs
 
 
-def reference_excluded_volume(zyx, ids, pixel, shape, probe=1.4, sigma=0.5):
-    """Straightforward NumPy/SciPy construction of the excluded volume."""
-    keep = [i for i, a in enumerate(ids) if a != "H"]
-    pos = zyx.double().numpy()[keep] / pixel + np.array(shape) / 2
-    reach = np.array(
-        [UNITED_ATOM_RADII.get(ids[i], DEFAULT_UNITED_ATOM_RADIUS) for i in keep]
+def grid(pixel: float, shape: tuple[int, int, int]) -> np.ndarray:
+    """Voxel centres (Angstroms) as simulate3d places atoms: the origin at shape / 2."""
+    axes = [(np.arange(s) - s / 2) * pixel for s in shape]
+    return np.stack(np.meshgrid(*axes, indexing="ij"), -1)
+
+
+def exact_excluded_volume(centres, radii, pixel, shape):
+    """Exact E for one or two atoms.
+
+    Inside the accessible volume the distance to its surface is the distance to the
+    exposed part of either sphere: the radial projection if it is exposed, else the
+    circle where the spheres meet. Outside, it is the distance to the nearer ball.
+    """
+    x = grid(pixel, shape)
+    reach = [r + PROBE for r in radii]
+    c = [np.asarray(ci, float) for ci in centres]
+    if len(c) == 1:  # a second atom far away changes nothing
+        c.append(c[0] + 1e3)
+        reach.append(reach[0])
+    rel = [x - ci for ci in c]
+    norm = [np.linalg.norm(v, axis=-1) for v in rel]
+    inside = (norm[0] < reach[0]) | (norm[1] < reach[1])
+
+    axis = c[1] - c[0]
+    d = np.linalg.norm(axis)
+    axis = axis / d
+    t = (d * d + reach[0] ** 2 - reach[1] ** 2) / (2 * d)
+    rho = math.sqrt(max(reach[0] ** 2 - t * t, 0.0))
+    along = rel[0] @ axis
+    across = np.linalg.norm(rel[0] - along[..., None] * axis, axis=-1)
+    to_circle = np.sqrt((along - t) ** 2 + (across - rho) ** 2)
+
+    to_surface = []
+    for i, j in ((0, 1), (1, 0)):
+        q = c[i] + rel[i] * (reach[i] / np.maximum(norm[i], 1e-12))[..., None]
+        exposed = np.linalg.norm(q - c[j], axis=-1) >= reach[j]
+        to_surface.append(np.where(exposed, np.abs(reach[i] - norm[i]), to_circle))
+    depth = np.where(
+        inside,
+        np.minimum(*to_surface),
+        -np.minimum(norm[0] - reach[0], norm[1] - reach[1]),
     )
-    grid = np.stack(np.meshgrid(*[np.arange(s) for s in shape], indexing="ij"), -1)
-    dist = np.linalg.norm((grid[..., None, :] - pos) * pixel, axis=-1)
-    sas = (dist < reach + probe).any(-1)
-    ses = ndimage.distance_transform_edt(sas, sampling=pixel) >= probe
-    d_in = ndimage.distance_transform_edt(ses, sampling=pixel)
-    d_out = ndimage.distance_transform_edt(~ses, sampling=pixel)
-    signed = np.where(ses, -(d_in - 0.5 * pixel), d_out - 0.5 * pixel)
-    return 0.5 * erfc(signed / (math.sqrt(2) * sigma))
+    return 0.5 * erfc((PROBE - depth) / (math.sqrt(2) * SIGMA))
 
 
 def centroid(volume: torch.Tensor) -> np.ndarray:
@@ -120,57 +146,55 @@ def centroid(volume: torch.Tensor) -> np.ndarray:
 
 
 @pytest.mark.parametrize("device", DEVICES)
-def test_squared_distance_matches_scipy(device):
-    rng = np.random.default_rng(1)
-    mask = rng.random((24, 20, 28)) < 0.02
-    ref = ndimage.distance_transform_edt(~mask)
-    max_offset = 3
-    ours = torch.sqrt(
-        _squared_distance_to_mask(torch.from_numpy(mask).to(device), max_offset)
-    )
-    ours = ours.cpu().double().numpy()
-    near = ref <= max_offset
-    np.testing.assert_allclose(ours[near], ref[near], rtol=0, atol=1e-6)
-    assert (ours[~near] > max_offset).all()
-
-
-@pytest.mark.parametrize("device", DEVICES)
-@pytest.mark.parametrize("pixel", [0.5, 0.936])
-def test_excluded_volume_matches_reference_construction(device, pixel):
-    zyx, ids, _ = small_model()
-    shape = (36, 30, 34)
-    ours = solvent_excluded_volume(zyx.to(device), ids, pixel, shape)
-    ref = reference_excluded_volume(zyx, ids, pixel, shape)
-    assert ours.dtype == torch.float32
-    assert ours.device.type == torch.device(device).type
-    np.testing.assert_allclose(ours.cpu().numpy(), ref, rtol=0, atol=1e-6)
-
-
-@pytest.mark.parametrize("device", DEVICES)
-def test_one_atom_is_an_erf_sphere(device):
-    """At a fine voxel size, E of one carbon is the analytic erf-edged sphere."""
-    pixel, n, radius, sigma = 0.1, 100, UNITED_ATOM_RADII["C"], 0.5
+@pytest.mark.parametrize("pixel", [0.3, 0.936, 1.5, 2.0])
+def test_one_atom_is_an_erf_sphere(device, pixel):
+    """E of one carbon is the analytic erf-edged sphere, at any voxel size."""
+    n = int(math.ceil(14 / pixel)) // 2 * 2
     atom = [0.37, -0.21, 0.13]
     excluded = solvent_excluded_volume(
         torch.tensor([atom], device=device), ["C"], pixel, (n, n, n)
     )
-    excluded = excluded.cpu().double()
+    assert excluded.dtype == torch.float32
+    assert excluded.device.type == torch.device(device).type
+    exact = exact_excluded_volume([atom], [UNITED_ATOM_RADII["C"]], pixel, (n, n, n))
+    np.testing.assert_allclose(excluded.cpu().numpy(), exact, rtol=0, atol=1e-5)
 
-    g = (torch.arange(n, dtype=torch.float64) - n / 2) * pixel
-    r = torch.sqrt(
-        (g[:, None, None] - atom[0]) ** 2
-        + (g[None, :, None] - atom[1]) ** 2
-        + (g[None, None, :] - atom[2]) ** 2
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("pixel", [0.5, 0.936, 1.5])
+@pytest.mark.parametrize("distance", [1.45, 3.5, 5.5])
+def test_two_atoms_match_the_exact_surface(device, pixel, distance):
+    """Two atoms: the crease where the probe touches both is placed exactly too."""
+    n = int(math.ceil(18 / pixel)) // 2 * 2
+    rng = np.random.default_rng(int(distance * 10))
+    direction = rng.normal(size=3)
+    direction /= np.linalg.norm(direction)
+    offset = rng.uniform(-0.5, 0.5, 3) * pixel
+    atoms = np.stack(
+        [offset - direction * distance / 2, offset + direction * distance / 2]
     )
-    analytic = 0.5 * torch.special.erfc((r - radius) / (math.sqrt(2) * sigma))
+    excluded = solvent_excluded_volume(
+        torch.tensor(atoms, dtype=torch.float32, device=device),
+        ["C", "O"],
+        pixel,
+        (n, n, n),
+    )
+    ours = excluded.cpu().double().numpy()
+    radii = [UNITED_ATOM_RADII["C"], UNITED_ATOM_RADII["O"]]
+    exact = exact_excluded_volume(atoms, radii, pixel, (n, n, n))
+    assert ours.sum() == pytest.approx(exact.sum(), rel=0.005)
+    assert np.linalg.norm(ours - exact) / np.linalg.norm(exact) < 0.02
+    assert np.abs(ours - exact).max() < 0.1
 
-    # volume of the smoothed sphere: 4/3 pi (R^3 + 3 R sigma^2)
-    volume = float(excluded.sum()) * pixel**3
-    expected = 4 / 3 * math.pi * (radius**3 + 3 * radius * sigma**2)
-    assert volume == pytest.approx(expected, rel=0.04)  # erosion bias ~3 % here
-    assert float((excluded - analytic).norm() / analytic.norm()) < 0.05
-    centre = (centroid(excluded) - n / 2) * pixel
-    np.testing.assert_allclose(centre, atom, atol=0.01)
+
+def test_volume_does_not_depend_on_pixel_size():
+    zyx, ids, _ = small_model()
+    volumes = []
+    for pixel in (0.4, 0.8, 1.2, 1.6):
+        n = int(math.ceil(28 / pixel))
+        excluded = solvent_excluded_volume(zyx, ids, pixel, (n, n, n))
+        volumes.append(float(excluded.double().sum()) * pixel**3)
+    assert max(volumes) / min(volumes) < 1.01
 
 
 def test_radii_and_hydrogens():
@@ -196,10 +220,10 @@ def test_radii_and_hydrogens():
 
 def test_excluded_volume_input_checks():
     zyx, ids, _ = small_model()
-    with pytest.raises(ValueError, match="probe radius"):
-        solvent_excluded_volume(zyx, ids, 1.4, SHAPE)
     with pytest.raises(ValueError, match="atom ids"):
         solvent_excluded_volume(zyx, ids[:-1], PIXEL, SHAPE)
+    with pytest.raises(ValueError, match="seed_spacing"):
+        solvent_excluded_volume(zyx, ids, PIXEL, SHAPE, seed_spacing=0.0)
     with pytest.raises(ValueError, match="no voxel inside"):
         mean_inside_excluded_volume(
             torch.ones(SHAPE), solvent_excluded_volume(zyx[:0], [], PIXEL, SHAPE)

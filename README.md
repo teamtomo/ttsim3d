@@ -126,7 +126,7 @@ sim.export_to_mrc(mrc_filepath, device="cuda:0")
 `ttsim3d` simulates a molecule in vacuum, but in a specimen the molecule displaces solvent, whose potential is then missing from the map.
 With `subtract_solvent=True` the map becomes `A - rho * E`, where
 - `A` is the simulated potential before the dose filter and MTF;
-- `E` is the molecule's solvent-excluded volume, scaled to the mean of `A` inside it. It is built from the atoms as `ttsim3d` places them, with hydrogens dropped: united-atom radii (C 1.76, N 1.64, O 1.46, P 1.80, S 1.77, others 1.7 A) plus a 1.4 A probe give the solvent-accessible volume, which is eroded by the probe, and the surface gets an erf edge of 0.5 A (see `ttsim3d.solvent`);
+- `E` is the molecule's solvent-excluded volume, scaled to the mean of `A` inside it. It is built from the atoms as `ttsim3d` places them, with hydrogens dropped: united-atom radii (C 1.76, N 1.64, O 1.46, P 1.80, S 1.77, others 1.7 A) plus a 1.4 A probe give the solvent-accessible volume; the excluded volume is everything at least the probe radius from where the probe can reach, and its surface gets an erf edge of 0.5 A (see `ttsim3d.solvent`);
 - `rho` is `solvent_density`, the solvent's potential as a fraction of the molecule's mean potential. The default 0.6 is water against protein and RNA; crowded cytoplasm is around 0.6-0.72.
 
 The dose filter and MTF act on `A - rho * E`.
@@ -156,8 +156,9 @@ sim.export_to_mrc("template.mrc", excluded_volume_filepath="excluded_volume.mrc"
 
 The dose filter and MTF are linear, so a map simulated without dose weighting can be dose filtered later as usual: either simulate it with the solvent already subtracted, or write its `E` from the same run (also without dose weighting) and filter both maps the same way before combining them.
 
-`E` is built on the simulation grid from distances between voxel centres, so its surface sits up to about half a voxel outside the exact solvent-excluded surface.
-Use a pixel spacing well below the probe radius; at 1.4 A or coarser the erosion cannot act and the simulation raises an error.
+`E` comes from the exact geometry of the atoms (spheres, the circles where two meet, and the corners where three meet), not from voxel centres, so it is the same at any pixel size.
+One atom gives the analytic erf-edged sphere; for fragments of a ribosomal subunit the volume is within about 2 % of an exact reference at 0.5-2 A per pixel.
+Gaps between atoms narrower than about `seed_spacing` (0.5 A) can be missed.
 
 ### Working with configuration files
 
