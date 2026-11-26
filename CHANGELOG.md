@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Subtraction of the solvent a molecule displaces: the map becomes `A - rho * E`, with `E` the solvent-excluded volume of the model scaled to the mean of the unfiltered potential `A` inside it, before the dose filter and MTF. Set by the new `SimulatorConfig` fields `subtract_solvent` (default `False`) and `solvent_density` (`rho`, default 0.6 for water), `simulate3d(..., solvent_density=...)`, and `ttsim3d-cli --subtract-solvent --solvent-density`. New module `ttsim3d.solvent`.
+- `E`, scaled and filtered as it enters the map, can be returned or written as its own map (`return_excluded_volume=True` in `simulate3d` and `Simulator.run`, `Simulator.export_to_mrc(excluded_volume_filepath=...)`, `ttsim3d-cli --excluded-volume-mrc`), so the map for any `rho` can be made later.
+
 ## [v0.4.0] -- 17 June 2025
 
 ### Modified

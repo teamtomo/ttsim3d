@@ -121,6 +121,44 @@ volume_gpu = sim.run(device="cuda:0")
 sim.export_to_mrc(mrc_filepath, device="cuda:0")
 ```
 
+### Subtracting the displaced solvent
+
+`ttsim3d` simulates a molecule in vacuum, but in a specimen the molecule displaces solvent, whose potential is then missing from the map.
+With `subtract_solvent=True` the map becomes `A - rho * E`, where
+- `A` is the simulated potential before the dose filter and MTF;
+- `E` is the molecule's solvent-excluded volume, scaled to the mean of `A` inside it. It is built from the atoms as `ttsim3d` places them, with hydrogens dropped: united-atom radii (C 1.76, N 1.64, O 1.46, P 1.80, S 1.77, others 1.7 A) plus a 1.4 A probe give the solvent-accessible volume, which is eroded by the probe, and the surface gets an erf edge of 0.5 A (see `ttsim3d.solvent`);
+- `rho` is `solvent_density`, the solvent's potential as a fraction of the molecule's mean potential. The default 0.6 is water against protein and RNA; crowded cytoplasm is around 0.6-0.72.
+
+The dose filter and MTF act on `A - rho * E`.
+With `subtract_solvent=False` (the default) or `solvent_density=0` the map is unchanged, byte for byte.
+
+```python
+sim_conf = SimulatorConfig(
+    voltage=300.0,
+    dose_start=0.0,
+    dose_end=50.0,
+    subtract_solvent=True,
+    solvent_density=0.6,  # the default, water
+)
+```
+
+On the command line, add `--subtract-solvent`, and optionally `--solvent-density 0.65`.
+
+To choose `rho` later, for example by fitting it to data, write `E` as its own map.
+It is scaled and filtered exactly as it enters the map, so the map for any `rho` is (the map without subtraction) `- rho * E`:
+```python
+volume, excluded_volume = sim.run(return_excluded_volume=True)
+template = volume - 0.65 * excluded_volume
+
+# or write both maps; on the command line: --excluded-volume-mrc excluded_volume.mrc
+sim.export_to_mrc("template.mrc", excluded_volume_filepath="excluded_volume.mrc")
+```
+
+The dose filter and MTF are linear, so a map simulated without dose weighting can be dose filtered later as usual: either simulate it with the solvent already subtracted, or write its `E` from the same run (also without dose weighting) and filter both maps the same way before combining them.
+
+`E` is built on the simulation grid from distances between voxel centres, so its surface sits up to about half a voxel outside the exact solvent-excluded surface.
+Use a pixel spacing well below the probe radius; at 1.4 A or coarser the erosion cannot act and the simulation raises an error.
+
 ### Working with configuration files
 
 Simulation configurations can be saved to disk as either a YAML or JSON file by using the `to_yaml` or `to_json` methods of the `Simulator` class, respectively.
@@ -150,7 +188,9 @@ simulator_config:
   dose_filter_modify_signal: None
   dose_start: 0.0
   mtf_reference: k2_300kv
+  solvent_density: 0.6
   store_volume: true
+  subtract_solvent: false
   upsampling: -1
   voltage: 300.0
 ```
